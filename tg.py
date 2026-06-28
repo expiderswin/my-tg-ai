@@ -1,86 +1,71 @@
 import asyncio
 import os
-import sqlite3
+import g4f
 from aiogram import Bot, Dispatcher, F
-from aiogram.filters import Command
-from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton
+from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton, FSInputFile
+from db import init_db, get_balance, update_balance
 
-# Получаем токен из настроек Railway (Environment Variables)
 API_TOKEN = os.getenv("TOKEN")
-INITIAL_TOKENS = 10000000
-
 bot = Bot(token=API_TOKEN)
 dp = Dispatcher()
 
-def init_db():
-    conn = sqlite3.connect("bot_data.db")
-    cursor = conn.cursor()
-    cursor.execute('''CREATE TABLE IF NOT EXISTS users 
-                      (user_id INTEGER PRIMARY KEY, balance INTEGER, mode TEXT)''')
-    conn.commit()
-    conn.close()
+# Словарь моделей
+MODEL_MAP = {
+    "GPT-4o": g4f.models.gpt_4o,
+    "Claude-3": g4f.models.claude_3_opus,
+    "Gemini": g4f.models.gemini,
+    "DeepSeek": g4f.models.deepseek_chat
+}
 
-def get_main_keyboard():
-    return ReplyKeyboardMarkup(keyboard=[
-        [KeyboardButton(text="Баланс"), KeyboardButton(text="Реферальная программа")],
-        [KeyboardButton(text="Выбор модели")]
-    ], resize_keyboard=True)
-
-def get_mode_keyboard():
-    return ReplyKeyboardMarkup(keyboard=[
-        [KeyboardButton(text="Режим: Codex"), KeyboardButton(text="Режим: Cursor")],
-        [KeyboardButton(text="Назад")]
-    ], resize_keyboard=True)
-
-@dp.message(Command("start"))
-async def cmd_start(message: Message):
-    init_db()
-    conn = sqlite3.connect("bot_data.db")
-    cursor = conn.cursor()
-    cursor.execute("INSERT OR IGNORE INTO users (user_id, balance, mode) VALUES (?, ?, ?)", 
-                   (message.from_user.id, INITIAL_TOKENS, "Codex"))
-    conn.commit()
-    conn.close()
-    await message.answer("Система готова. Выберите действие:", reply_markup=get_main_keyboard())
+def get_kb():
+    kb = [
+        [KeyboardButton(text="Баланс"), KeyboardButton(text="Выбор модели")],
+        [KeyboardButton(text="GPT-4o"), KeyboardButton(text="Claude-3"), KeyboardButton(text="DeepSeek")]
+    ]
+    return ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True)
 
 @dp.message(F.text == "Баланс")
 async def show_balance(message: Message):
-    conn = sqlite3.connect("bot_data.db")
-    cursor = conn.cursor()
-    cursor.execute("SELECT balance FROM users WHERE user_id = ?", (message.from_user.id,))
-    res = cursor.fetchone()
-    conn.close()
-    balance = res[0] if res else 0
-    await message.answer(f"Ваш остаток: {balance:,} токенов.".replace(",", " "))
+    bal = get_balance(message.from_user.id)
+    await message.answer(f"💰 Ваш баланс: {bal:,} токенов.")
 
-@dp.message(F.text == "Реферальная программа")
-async def show_ref(message: Message):
-    bot_info = await bot.get_me()
-    await message.answer(f"Ссылка: https://t.me/{bot_info.username}?start={message.from_user.id}")
-
-@dp.message(F.text == "Выбор модели")
-async def choose_mode(message: Message):
-    await message.answer("Выберите архитектуру:", reply_markup=get_mode_keyboard())
-
-@dp.message(F.text.startswith("Режим:"))
-async def set_mode(message: Message):
-    mode = message.text.split(": ")[1]
-    conn = sqlite3.connect("bot_data.db")
-    cursor = conn.cursor()
-    cursor.execute("UPDATE users SET mode = ? WHERE user_id = ?", (mode, message.from_user.id))
-    conn.commit()
-    conn.close()
-    await message.answer(f"Активная модель: {mode}", reply_markup=get_main_keyboard())
-
-@dp.message(F.text == "Назад")
-async def back(message: Message):
-    await message.answer("Главное меню.", reply_markup=get_main_keyboard())
+@dp.message(F.text.in_(MODEL_MAP.keys()))
+async def set_model(message: Message, state: dict = {}):
+    state[message.from_user.id] = message.text
+    await message.answer(f"✅ Модель {message.text} активна.")
 
 @dp.message(F.text)
-async def handle_request(message: Message):
-    code_result = "def hello():\n    print('Hello World')"
-    response = f"Результат генерации:\n\n```python\n{code_result}\n```"
-    await message.answer(response, parse_mode="Markdown")
+async def ai_handler(message: Message, state: dict = {}):
+    # Проверка на читы
+    if any(w in message.text.lower() for w in ["чит", "hack", "dll", "взлом"]):
+        await message.answer("⚠️ Запрос заблокирован системой безопасности.")
+        return
+
+    # Проверка баланса
+    bal = get_balance(message.from_user.id)
+    if bal < 1000:
+        await message.answer("❌ Недостаточно токенов!")
+        return
+
+    model_name = state.get(message.from_user.id, "GPT-4o")
+    update_balance(message.from_user.id, 1000) # Списание 1000 за запрос
+
+    msg = await message.answer("⏳ Генерирую...")
+    
+    try:
+        response = g4f.ChatCompletion.create(model=MODEL_MAP[model_name], messages=[{"role": "user", "content": message.text}])
+        
+        # Создание файла
+        file_path = f"output.txt"
+        with open(file_path, "w", encoding="utf-8") as f: f.write(response)
+        
+        await message.answer(f"Готово (списано 1000 токенов):")
+        await message.answer_document(FSInputFile(file_path), caption="Результат в файле")
+        os.remove(file_path)
+    except Exception as e:
+        await message.answer(f"Ошибка: {e}")
+    finally:
+        await bot.delete_message(message.chat.id, msg.message_id)
 
 async def main():
     init_db()
