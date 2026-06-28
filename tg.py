@@ -1,62 +1,50 @@
 import os, g4f, asyncio
 from aiogram import Bot, Dispatcher, F
-from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton, FSInputFile
+from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile
 from aiogram.filters import Command
 
 bot = Bot(token=os.getenv("TOKEN"))
 dp = Dispatcher()
 
-# Список доступных ИИ и языков
-MODELS = ["gpt-4o", "gemini", "claude-3-opus", "deepseek-chat"]
-LANGS = ["Python", "C++", "C#", "JavaScript", "HTML/CSS"]
+# Структура моделей
+AI_MODELS = {
+    "DeepSeek": {"Chat": g4f.models.deepseek_chat, "Reasoning": g4f.models.deepseek_r1},
+    "Claude": {"Opus": g4f.models.claude_3_opus, "Sonnet": g4f.models.claude_3_5_sonnet},
+    "Gemini": {"Flash": g4f.models.gemini_flash, "Pro": g4f.models.gemini}
+}
 
-def main_kb():
-    return ReplyKeyboardMarkup(keyboard=[
-        [KeyboardButton(text="Выбрать модель"), KeyboardButton(text="Выбрать язык")],
-        [KeyboardButton(text="Баланс"), KeyboardButton(text="Рефералка")]
-    ], resize_keyboard=True)
+user_data = {}
 
-# Хранилище выбора пользователя
-user_pref = {} 
+def get_ai_kb():
+    buttons = [[InlineKeyboardButton(text=ai, callback_data=f"ai_{ai}")] for ai in AI_MODELS]
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 @dp.message(Command("start"))
 async def start(m: Message):
-    await m.answer("Добро пожаловать в AI-студию. Выберите настройки для генерации.", reply_markup=main_kb())
+    await m.answer("Выберите нейросеть:", reply_markup=get_ai_kb())
 
-@dp.message(F.text == "Выбрать модель")
-async def ask_model(m: Message):
-    kb = [[KeyboardButton(text=f"AI:{model}")] for model in MODELS]
-    await m.answer("Выберите нейросеть:", reply_markup=ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True))
+@dp.callback_query(F.data.startswith("ai_"))
+async def select_version(call):
+    ai = call.data.split("_")[1]
+    btns = [[InlineKeyboardButton(text=v, callback_data=f"ver_{ai}_{v}")] for v in AI_MODELS[ai]]
+    await call.message.edit_text(f"Выберите версию {ai}:", reply_markup=InlineKeyboardMarkup(inline_keyboard=btns))
 
-@dp.message(F.text == "Выбрать язык")
-async def ask_lang(m: Message):
-    kb = [[KeyboardButton(text=f"Lang:{lang}")] for lang in LANGS]
-    await m.answer("Выберите язык:", reply_markup=ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True))
-
-@dp.message(F.text.startswith(("AI:", "Lang:")))
-async def save_pref(m: Message):
-    if m.text.startswith("AI:"): user_pref[m.from_user.id] = {"model": m.text[3:]}
-    else: user_pref[m.from_user.id] = {**user_pref.get(m.from_user.id, {"model": "gpt-4o"}), "lang": m.text[5:]}
-    await m.answer("Настройка сохранена.", reply_markup=main_kb())
+@dp.callback_query(F.data.startswith("ver_"))
+async def save_config(call):
+    _, ai, ver = call.data.split("_")
+    user_data[call.from_user.id] = {"model": AI_MODELS[ai][ver]}
+    await call.message.edit_text(f"Выбрано: {ai} {ver}. Теперь напишите промпт (код).")
 
 @dp.message(F.text)
 async def chat(m: Message):
-    if any(w in m.text.lower() for w in ["чит", "hack", "dll"]): 
-        return await m.answer("Запрос отклонен: нарушение безопасности.")
-    
-    pref = user_pref.get(m.from_user.id, {"model": "gpt-4o", "lang": "Python"})
-    prompt = f"Напиши код на {pref['lang']} по запросу: {m.text}"
+    cfg = user_data.get(m.from_user.id)
+    if not cfg: return await m.answer("Сначала выберите ИИ через /start")
     
     msg = await m.answer("Генерирую...")
     try:
-        res = g4f.ChatCompletion.create(model=pref['model'], messages=[{"role": "user", "content": prompt}])
-        
-        fname = f"code_{m.from_user.id}.txt"
-        with open(fname, "w", encoding="utf-8") as f: f.write(res)
-        
-        await m.answer(f"Результат ({pref['model']} / {pref['lang']}):\n{res[:1000]}...")
-        await m.answer_document(FSInputFile(fname))
-        os.remove(fname)
+        res = g4f.ChatCompletion.create(model=cfg['model'], messages=[{"role": "user", "content": m.text}])
+        with open("code.txt", "w", encoding="utf-8") as f: f.write(res)
+        await m.answer_document(FSInputFile("code.txt"), caption=f"Код готов ({m.text[:20]}...)")
     except Exception as e:
         await m.answer(f"Ошибка: {e}")
     finally:
