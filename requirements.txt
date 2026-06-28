@@ -3,13 +3,10 @@ google-generativeai
 anthropic
 openai
 httpx
-python-dotenv
-Pillow
+pillow
 SpeechRecognition
 pydub
-aiofiles
 replicate
-moviepy
 numpy
-imageio-ffmpeg
-setuptools
+moviepy
+python-dotenv
