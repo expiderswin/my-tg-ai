@@ -47,9 +47,9 @@ except ImportError:
         MOVIEPY_AVAILABLE = False
         logging.warning("⚠️ MoviePy не установлен. Генерация видео недоступна.")
 
-# ========== КОНФИГУРАЦИЯ (ТОЛЬКО ИЗ .env) ==========
+# ========== КОНФИГУРАЦИЯ (из .env) ==========
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_ID = os.getenv("ADMIN_ID")  # если не задан – админ-панель недоступна
+ADMIN_ID = os.getenv("ADMIN_ID")   # теперь это строка
 
 GEMINI_KEY = os.getenv("GEMINI_API_KEY")
 CLAUDE_KEY = os.getenv("CLAUDE_API_KEY")
@@ -60,6 +60,7 @@ REPLICATE_API_KEY = os.getenv("REPLICATE_API_KEY")
 # Проверка обязательных переменных
 if not BOT_TOKEN:
     raise ValueError("❌ BOT_TOKEN не задан в .env!")
+
 if not all([GEMINI_KEY, CLAUDE_KEY, OPENAI_KEY, DEEPSEEK_KEY, REPLICATE_API_KEY]):
     logging.warning("⚠️ Некоторые API-ключи отсутствуют! Проверьте .env файл.")
 
@@ -657,7 +658,7 @@ async def admin_panel(message: Message):
         parse_mode="Markdown"
     )
 
-# ========== ОБРАБОТЧИКИ КНОПОК (без админки) ==========
+# ========== ОБРАБОТЧИКИ КНОПОК ==========
 @dp.message(F.text == "💬 Чат")
 async def chat_button(message: Message):
     await message.answer("💬 Режим чата активен!\nПросто напишите любой текст, и я отвечу.\n\n🎙️ Или отправьте голосовое сообщение!")
