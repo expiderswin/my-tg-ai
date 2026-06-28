@@ -11,7 +11,7 @@ from typing import Optional, Dict, Any, List
 from collections import defaultdict
 
 from dotenv import load_dotenv
-load_dotenv()  # Загружаем переменные из .env
+load_dotenv()  # загружаем переменные из .env
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command, StateFilter
@@ -35,7 +35,7 @@ from pydub import AudioSegment
 import replicate
 import numpy as np
 
-# ========== ИСПРАВЛЕННЫЙ ИМПОРТ MOVIEPY ==========
+# ========== MOVIEPY (опционально) ==========
 try:
     from moviepy import ImageSequenceClip
     MOVIEPY_AVAILABLE = True
@@ -47,9 +47,9 @@ except ImportError:
         MOVIEPY_AVAILABLE = False
         logging.warning("⚠️ MoviePy не установлен. Генерация видео недоступна.")
 
-# ========== КОНФИГУРАЦИЯ (из .env) ==========
+# ========== КОНФИГУРАЦИЯ (ТОЛЬКО ИЗ .env) ==========
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_ID = int(os.getenv("ADMIN_ID", 7615846791))
+ADMIN_ID = os.getenv("ADMIN_ID")  # если не задан – админ-панель недоступна
 
 GEMINI_KEY = os.getenv("GEMINI_API_KEY")
 CLAUDE_KEY = os.getenv("CLAUDE_API_KEY")
@@ -57,8 +57,10 @@ OPENAI_KEY = os.getenv("OPENAI_API_KEY")
 DEEPSEEK_KEY = os.getenv("DEEPSEEK_API_KEY")
 REPLICATE_API_KEY = os.getenv("REPLICATE_API_KEY")
 
-# Проверка наличия ключей
-if not all([BOT_TOKEN, GEMINI_KEY, CLAUDE_KEY, OPENAI_KEY, DEEPSEEK_KEY, REPLICATE_API_KEY]):
+# Проверка обязательных переменных
+if not BOT_TOKEN:
+    raise ValueError("❌ BOT_TOKEN не задан в .env!")
+if not all([GEMINI_KEY, CLAUDE_KEY, OPENAI_KEY, DEEPSEEK_KEY, REPLICATE_API_KEY]):
     logging.warning("⚠️ Некоторые API-ключи отсутствуют! Проверьте .env файл.")
 
 # ========== МОДЕЛИ ==========
@@ -381,9 +383,8 @@ class ContentGenerator:
     @staticmethod
     async def generate_image(prompt: str) -> Optional[bytes]:
         try:
-            if not REPLICATE_API_KEY or REPLICATE_API_KEY == "r8_dummy":
+            if not REPLICATE_API_KEY:
                 return await ContentGenerator._create_fallback_image(prompt)
-            
             output = replicate.run(
                 "stability-ai/stable-diffusion:db21e45d3f7023abc2a46ee38a23973f6dce16bb082a930b0c49861f96d1e5bf",
                 input={
@@ -424,7 +425,6 @@ class ContentGenerator:
     async def generate_video(prompt: str, duration: int = 5) -> Optional[bytes]:
         if not MOVIEPY_AVAILABLE:
             return None
-            
         try:
             frames = []
             for i in range(duration * 24):
@@ -434,24 +434,18 @@ class ContentGenerator:
                     font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 48)
                 except:
                     font = ImageFont.load_default()
-                
                 progress = i / (duration * 24)
                 text = f"{prompt[:50]}...\nGenerating: {int(progress * 100)}%"
                 d.text((50, 300), text, fill=(255, 255, 255), font=font)
-                
                 img_byte_arr = io.BytesIO()
                 img.save(img_byte_arr, format='PNG')
                 frames.append(np.array(Image.open(img_byte_arr)))
-            
             clip = ImageSequenceClip(frames, fps=24)
-            
             with tempfile.NamedTemporaryFile(suffix='.mp4', delete=False) as tmp_file:
                 clip.write_videofile(tmp_file.name, codec='libx264', fps=24)
                 tmp_file_path = tmp_file.name
-            
             with open(tmp_file_path, 'rb') as f:
                 video_data = f.read()
-            
             os.unlink(tmp_file_path)
             return video_data
         except Exception as e:
@@ -468,16 +462,13 @@ class VoiceProcessor:
             with tempfile.NamedTemporaryFile(suffix='.ogg', delete=False) as tmp_file:
                 tmp_file.write(voice_file)
                 tmp_file_path = tmp_file.name
-            
             audio = AudioSegment.from_ogg(tmp_file_path)
             wav_path = tmp_file_path.replace('.ogg', '.wav')
             audio.export(wav_path, format='wav')
-            
             recognizer = sr.Recognizer()
             with sr.AudioFile(wav_path) as source:
                 audio_data = recognizer.record(source)
                 text = recognizer.recognize_google(audio_data, language='ru-RU')
-            
             return text
         except Exception as e:
             logger.error(f"Voice recognition error: {e}")
@@ -602,7 +593,7 @@ def get_main_keyboard() -> ReplyKeyboardMarkup:
         KeyboardButton(text="🔗 Рефералка"),
         KeyboardButton(text="📖 Помощь")
     )
-    builder.row(KeyboardButton(text="⚡ Админ-панель"))
+    # Кнопка "Админ-панель" УДАЛЕНА – доступ только через /admin
     return builder.as_markup(resize_keyboard=True)
 
 def get_admin_keyboard() -> ReplyKeyboardMarkup:
@@ -624,13 +615,14 @@ def get_admin_keyboard() -> ReplyKeyboardMarkup:
 
 # ========== ПРОВЕРКА АДМИНА ==========
 def is_admin(user_id: int) -> bool:
-    return user_id == ADMIN_ID
+    if ADMIN_ID is None:
+        return False
+    return str(user_id) == str(ADMIN_ID)
 
 # ========== ОБРАБОТЧИКИ КОМАНД ==========
 @dp.message(Command("start"))
 async def start_cmd(message: Message):
     user = db.get_user(message.from_user.id)
-    
     if len(message.text.split()) > 1:
         try:
             referrer_id = int(message.text.split()[1])
@@ -638,7 +630,6 @@ async def start_cmd(message: Message):
                 db.add_referral(referrer_id, message.from_user.id)
         except:
             pass
-    
     await message.answer(
         f"🤖 *AI Bot v3.0*\n\n"
         f"👤 Привет, {message.from_user.first_name}!\n"
@@ -654,11 +645,9 @@ async def admin_panel(message: Message):
     if not is_admin(message.from_user.id):
         await message.answer("⛔ Доступ запрещён!")
         return
-    
     total_users = db.get_total_users()
     total_gens = db.get_total_generations()
     today_users = db.get_today_users()
-    
     await message.answer(
         f"⚡ *Админ-панель*\n\n"
         f"👥 Всего: {total_users}\n"
@@ -668,42 +657,25 @@ async def admin_panel(message: Message):
         parse_mode="Markdown"
     )
 
-# ========== ОБРАБОТЧИКИ КНОПОК ==========
+# ========== ОБРАБОТЧИКИ КНОПОК (без админки) ==========
 @dp.message(F.text == "💬 Чат")
 async def chat_button(message: Message):
-    await message.answer(
-        "💬 Режим чата активен!\n"
-        "Просто напишите любой текст, и я отвечу.\n\n"
-        "🎙️ Или отправьте голосовое сообщение!"
-    )
+    await message.answer("💬 Режим чата активен!\nПросто напишите любой текст, и я отвечу.\n\n🎙️ Или отправьте голосовое сообщение!")
 
 @dp.message(F.text == "💻 Код")
 async def code_button(message: Message, state: FSMContext):
     await state.set_state(Form.waiting_for_code_prompt)
-    await message.answer(
-        "💻 Напишите, какой код нужно сгенерировать.\n"
-        "Пример: `python парсер сайта`\n"
-        "Поддерживаются: Python, C++, HTML, CSS, JavaScript, Java и другие"
-    )
+    await message.answer("💻 Напишите, какой код нужно сгенерировать.\nПример: `python парсер сайта`\nПоддерживаются: Python, C++, HTML, CSS, JavaScript, Java и другие")
 
 @dp.message(F.text == "🖼️ Картинка")
 async def image_button(message: Message, state: FSMContext):
     await state.set_state(Form.waiting_for_image_prompt)
-    await message.answer(
-        "🖼️ Напишите описание изображения.\n"
-        "Пример: `красивый закат на море, цифровое искусство`\n\n"
-        "💰 Стоимость: 5 токенов"
-    )
+    await message.answer("🖼️ Напишите описание изображения.\nПример: `красивый закат на море, цифровое искусство`\n\n💰 Стоимость: 5 токенов")
 
 @dp.message(F.text == "🎬 Видео")
 async def video_button(message: Message, state: FSMContext):
     await state.set_state(Form.waiting_for_video_prompt)
-    await message.answer(
-        "🎬 Напишите текст для видео.\n"
-        "Пример: `AI генерация контента`\n\n"
-        "💰 Стоимость: 10 токенов\n"
-        "⏱️ Длительность: 5 секунд"
-    )
+    await message.answer("🎬 Напишите текст для видео.\nПример: `AI генерация контента`\n\n💰 Стоимость: 10 токенов\n⏱️ Длительность: 5 секунд")
 
 @dp.message(F.text == "💰 Баланс")
 async def balance_button(message: Message):
@@ -725,7 +697,6 @@ async def models_button(message: Message):
     for model_key in MODELS.keys():
         keyboard.row(InlineKeyboardButton(text=model_key, callback_data=f"setmodel_{model_key}"))
     keyboard.row(InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_menu"))
-    
     user = db.get_user(message.from_user.id)
     await message.answer(
         f"🧠 *Выбор модели*\n\n"
@@ -738,7 +709,6 @@ async def models_button(message: Message):
 async def stats_button(message: Message):
     user = db.get_user(message.from_user.id)
     total_gens = db.get_total_generations()
-    
     await message.answer(
         f"📊 *Ваша статистика*\n\n"
         f"💰 Баланс: {user['balance']}\n"
@@ -751,7 +721,6 @@ async def stats_button(message: Message):
 async def referral_button(message: Message):
     bot_info = await bot.get_me()
     link = f"https://t.me/{bot_info.username}?start={message.from_user.id}"
-    
     await message.answer(
         f"🔗 *Ваша реферальная ссылка:*\n"
         f"`{link}`\n\n"
@@ -773,20 +742,14 @@ async def help_button(message: Message):
         parse_mode="Markdown"
     )
 
-# ========== АДМИН-КНОПКИ ==========
-@dp.message(F.text == "⚡ Админ-панель")
-async def admin_panel_btn(message: Message):
-    await admin_panel(message)
-
+# ========== АДМИН-КНОПКИ (без отдельной кнопки в меню) ==========
 @dp.message(F.text == "📊 Статистика бота")
 async def admin_stats(message: Message):
     if not is_admin(message.from_user.id):
         return
-    
     total_users = db.get_total_users()
     total_gens = db.get_total_generations()
     today_users = db.get_today_users()
-    
     await message.answer(
         f"📊 *Статистика бота*\n\n"
         f"👥 Всего: {total_users}\n"
@@ -799,24 +762,20 @@ async def admin_stats(message: Message):
 async def admin_users_list(message: Message):
     if not is_admin(message.from_user.id):
         return
-    
     users = db.get_all_users()
     if not users:
         await message.answer("📭 Нет пользователей")
         return
-    
     text = "📋 *Пользователи (первые 10):*\n\n"
     for user in users[:10]:
         status = "🚫" if user.get("is_banned", False) else "✅"
         text += f"{status} ID: `{user['user_id']}` | 💰 {user['balance']}\n"
-    
     await message.answer(text, parse_mode="Markdown")
 
 @dp.message(F.text == "📢 Рассылка")
 async def admin_broadcast(message: Message, state: FSMContext):
     if not is_admin(message.from_user.id):
         return
-    
     await state.set_state(Form.waiting_for_broadcast)
     await message.answer(
         "📢 Введите текст для рассылки:",
@@ -832,14 +791,11 @@ async def process_broadcast(message: Message, state: FSMContext):
         await state.clear()
         await message.answer("❌ Отменено", reply_markup=get_admin_keyboard())
         return
-    
     if not is_admin(message.from_user.id):
         return
-    
     await message.answer("⏳ Начинаю рассылку...")
     users = db.get_all_users()
     success, fail = 0, 0
-    
     for user in users:
         try:
             await bot.send_message(
@@ -851,7 +807,6 @@ async def process_broadcast(message: Message, state: FSMContext):
         except:
             fail += 1
         await asyncio.sleep(0.05)
-    
     await state.clear()
     await message.answer(
         f"✅ Рассылка завершена!\n📨 Успешно: {success}\n❌ Ошибок: {fail}",
@@ -862,7 +817,6 @@ async def process_broadcast(message: Message, state: FSMContext):
 async def admin_ban(message: Message, state: FSMContext):
     if not is_admin(message.from_user.id):
         return
-    
     await state.set_state(Form.waiting_for_ban_user)
     await message.answer(
         "🚫 Введите ID пользователя:",
@@ -878,14 +832,12 @@ async def process_ban(message: Message, state: FSMContext):
         await state.clear()
         await message.answer("❌ Отменено", reply_markup=get_admin_keyboard())
         return
-    
     if not is_admin(message.from_user.id):
         return
-    
     try:
         user_id = int(message.text.strip())
         if db.ban_user(user_id):
-            db.add_admin_log(ADMIN_ID, "ban", user_id)
+            db.add_admin_log(int(ADMIN_ID), "ban", user_id)
             await state.clear()
             await message.answer(f"✅ Пользователь {user_id} забанен!", reply_markup=get_admin_keyboard())
             try:
@@ -899,7 +851,6 @@ async def process_ban(message: Message, state: FSMContext):
 async def admin_unban(message: Message, state: FSMContext):
     if not is_admin(message.from_user.id):
         return
-    
     await state.set_state(Form.waiting_for_unban_user)
     await message.answer(
         "✅ Введите ID пользователя:",
@@ -915,14 +866,12 @@ async def process_unban(message: Message, state: FSMContext):
         await state.clear()
         await message.answer("❌ Отменено", reply_markup=get_admin_keyboard())
         return
-    
     if not is_admin(message.from_user.id):
         return
-    
     try:
         user_id = int(message.text.strip())
         if db.unban_user(user_id):
-            db.add_admin_log(ADMIN_ID, "unban", user_id)
+            db.add_admin_log(int(ADMIN_ID), "unban", user_id)
             await state.clear()
             await message.answer(f"✅ Пользователь {user_id} разбанен!", reply_markup=get_admin_keyboard())
             try:
@@ -936,19 +885,15 @@ async def process_unban(message: Message, state: FSMContext):
 async def admin_top_users(message: Message):
     if not is_admin(message.from_user.id):
         return
-    
     users = db.get_all_users()
     sorted_users = sorted(users, key=lambda x: x.get("balance", 0), reverse=True)[:10]
-    
     if not sorted_users:
         await message.answer("📭 Нет данных")
         return
-    
     text = "🏆 *Топ пользователей:*\n\n"
     for i, user in enumerate(sorted_users, 1):
         medal = ["🥇", "🥈", "🥉"][i-1] if i <= 3 else f"{i}."
         text += f"{medal} ID: `{user['user_id']}` | 💰 {user['balance']}\n"
-    
     await message.answer(text, parse_mode="Markdown")
 
 @dp.message(F.text == "🔙 Назад в меню")
@@ -995,17 +940,13 @@ async def process_video_gen(message: Message, state: FSMContext):
 @dp.message(F.voice)
 async def handle_voice(message: Message):
     user = db.get_user(message.from_user.id)
-    
     if user.get("is_banned", False):
         await message.answer("🚫 Вы забанены!")
         return
-
     voice_file = await bot.get_file(message.voice.file_id)
     file_bytes = await bot.download_file(voice_file.file_path)
-    
     msg = await message.answer("🎙️ Распознаю голос...")
     text = await VoiceProcessor.voice_to_text(file_bytes.read())
-    
     if text:
         await message.answer(f"📝 Вы сказали: *{text}*", parse_mode="Markdown")
         service = AIProvider.get_service(user["model"])
@@ -1028,27 +969,22 @@ async def chat_handler(message: Message):
     if message.text.startswith('/') or message.text in [
         "💬 Чат", "💻 Код", "🖼️ Картинка", "🎬 Видео",
         "💰 Баланс", "🧠 Модели", "📊 Статистика",
-        "🔗 Рефералка", "📖 Помощь", "⚡ Админ-панель",
+        "🔗 Рефералка", "📖 Помощь",
         "📊 Статистика бота", "📋 Список пользователей",
         "📢 Рассылка", "🚫 Бан пользователя",
         "✅ Разбан пользователя", "⚡ Топ пользователей",
         "🔙 Назад в меню", "❌ Отмена"
     ]:
         return
-
     user_id = message.from_user.id
     user = db.get_user(user_id)
-
     if user["balance"] <= 0:
         await message.answer("❌ Недостаточно токенов! Используйте /referral.")
         return
-
     if user.get("is_banned", False):
         await message.answer("🚫 Вы забанены!")
         return
-
     await bot.send_chat_action(chat_id=message.chat.id, action="typing")
-
     try:
         service = AIProvider.get_service(user["model"])
         response = await service.generate(message.text, history=user["history"])
