@@ -1,75 +1,41 @@
-import asyncio
-import os
-import g4f
+import os, g4f, sqlite3
 from aiogram import Bot, Dispatcher, F
-from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton, FSInputFile
-from db import init_db, get_balance, update_balance
+from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton
+from aiogram.filters import Command
 
-API_TOKEN = os.getenv("TOKEN")
-bot = Bot(token=API_TOKEN)
+bot = Bot(token=os.getenv("TOKEN"))
 dp = Dispatcher()
+db = sqlite3.connect("bot.db", check_same_thread=False)
+db.execute("CREATE TABLE IF NOT EXISTS u (id INTEGER PRIMARY KEY, b INTEGER DEFAULT 10000000)")
 
-# Словарь моделей
-MODEL_MAP = {
-    "GPT-4o": g4f.models.gpt_4o,
-    "Claude-3": g4f.models.claude_3_opus,
-    "Gemini": g4f.models.gemini,
-    "DeepSeek": g4f.models.deepseek_chat
-}
+def kb():
+    return ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="Баланс"), KeyboardButton(text="Рефералка")]], resize_keyboard=True)
 
-def get_kb():
-    kb = [
-        [KeyboardButton(text="Баланс"), KeyboardButton(text="Выбор модели")],
-        [KeyboardButton(text="GPT-4o"), KeyboardButton(text="Claude-3"), KeyboardButton(text="DeepSeek")]
-    ]
-    return ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True)
+@dp.message(Command("start"))
+async def start(m: Message):
+    db.execute("INSERT OR IGNORE INTO u (id) VALUES (?)", (m.from_user.id,))
+    db.commit()
+    await m.answer("Добро пожаловать.", reply_markup=kb())
 
 @dp.message(F.text == "Баланс")
-async def show_balance(message: Message):
-    bal = get_balance(message.from_user.id)
-    await message.answer(f"💰 Ваш баланс: {bal:,} токенов.")
+async def bal(m: Message):
+    b = db.execute("SELECT b FROM u WHERE id=?", (m.from_user.id,)).fetchone()[0]
+    await m.answer(f"Баланс: {b} токенов.")
 
-@dp.message(F.text.in_(MODEL_MAP.keys()))
-async def set_model(message: Message, state: dict = {}):
-    state[message.from_user.id] = message.text
-    await message.answer(f"✅ Модель {message.text} активна.")
+@dp.message(F.text == "Рефералка")
+async def ref(m: Message):
+    await m.answer(f"Ссылка: https://t.me/{(await bot.get_me()).username}?start={m.from_user.id}")
 
 @dp.message(F.text)
-async def ai_handler(message: Message, state: dict = {}):
-    # Проверка на читы
-    if any(w in message.text.lower() for w in ["чит", "hack", "dll", "взлом"]):
-        await message.answer("⚠️ Запрос заблокирован системой безопасности.")
-        return
-
-    # Проверка баланса
-    bal = get_balance(message.from_user.id)
-    if bal < 1000:
-        await message.answer("❌ Недостаточно токенов!")
-        return
-
-    model_name = state.get(message.from_user.id, "GPT-4o")
-    update_balance(message.from_user.id, 1000) # Списание 1000 за запрос
-
-    msg = await message.answer("⏳ Генерирую...")
+async def chat(m: Message):
+    if any(w in m.text.lower() for w in ["чит", "hack", "dll"]): return await m.answer("Запрещено.")
+    if db.execute("SELECT b FROM u WHERE id=?", (m.from_user.id,)).fetchone()[0] < 1000: return await m.answer("Нет токенов.")
     
-    try:
-        response = g4f.ChatCompletion.create(model=MODEL_MAP[model_name], messages=[{"role": "user", "content": message.text}])
-        
-        # Создание файла
-        file_path = f"output.txt"
-        with open(file_path, "w", encoding="utf-8") as f: f.write(response)
-        
-        await message.answer(f"Готово (списано 1000 токенов):")
-        await message.answer_document(FSInputFile(file_path), caption="Результат в файле")
-        os.remove(file_path)
-    except Exception as e:
-        await message.answer(f"Ошибка: {e}")
-    finally:
-        await bot.delete_message(message.chat.id, msg.message_id)
-
-async def main():
-    init_db()
-    await dp.start_polling(bot)
+    db.execute("UPDATE u SET b = b - 1000 WHERE id=?", (m.from_user.id,))
+    db.commit()
+    res = g4f.ChatCompletion.create(model=g4f.models.gpt_4o, messages=[{"role": "user", "content": m.text}])
+    await m.answer(f"Ответ:\n{res[:4000]}")
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    import asyncio
+    asyncio.run(dp.start_polling(bot))
