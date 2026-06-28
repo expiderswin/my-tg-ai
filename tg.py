@@ -264,16 +264,20 @@ class ContentGenerator:
     @staticmethod
     async def _create_fallback_image(text: str) -> bytes:
         """Создание простого изображения с текстом"""
-        img = Image.new('RGB', (800, 400), color=(50, 50, 80))
-        d = ImageDraw.Draw(img)
         try:
-            font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 32)
-        except:
-            font = ImageFont.load_default()
-        d.text((50, 150), f"AI Generation: {text[:50]}...", fill=(255, 255, 255), font=font)
-        img_byte_arr = io.BytesIO()
-        img.save(img_byte_arr, format='PNG')
-        return img_byte_arr.getvalue()
+            img = Image.new('RGB', (800, 400), color=(50, 50, 80))
+            d = ImageDraw.Draw(img)
+            try:
+                font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 32)
+            except:
+                font = ImageFont.load_default()
+            d.text((50, 150), f"AI Generation: {text[:50]}...", fill=(255, 255, 255), font=font)
+            img_byte_arr = io.BytesIO()
+            img.save(img_byte_arr, format='PNG')
+            return img_byte_arr.getvalue()
+        except Exception as e:
+            logger.error(f"Fallback image error: {e}")
+            return b""
 
     @staticmethod
     async def generate_video(prompt: str, duration: int = 5) -> Optional[bytes]:
@@ -321,6 +325,8 @@ class VoiceProcessor:
     @staticmethod
     async def voice_to_text(voice_file: bytes) -> Optional[str]:
         """Конвертация голосового сообщения в текст"""
+        tmp_file_path = None
+        wav_path = None
         try:
             # Сохраняем аудио во временный файл
             with tempfile.NamedTemporaryFile(suffix='.ogg', delete=False) as tmp_file:
@@ -338,14 +344,19 @@ class VoiceProcessor:
                 audio_data = recognizer.record(source)
                 text = recognizer.recognize_google(audio_data, language='ru-RU')
             
-            # Удаляем временные файлы
-            os.unlink(tmp_file_path)
-            os.unlink(wav_path)
-            
             return text
         except Exception as e:
             logger.error(f"Voice recognition error: {e}")
             return None
+        finally:
+            # Удаляем временные файлы
+            try:
+                if tmp_file_path and os.path.exists(tmp_file_path):
+                    os.unlink(tmp_file_path)
+                if wav_path and os.path.exists(wav_path):
+                    os.unlink(wav_path)
+            except:
+                pass
 
 # ========== ОБРАБОТЧИК КОДА ==========
 class CodeHandler:
@@ -553,20 +564,27 @@ async def stats_button(message: Message):
     user_id = message.from_user.id
     
     # Подсчёт генераций
-    with sqlite3.connect("users.db") as conn:
-        c = conn.cursor()
-        c.execute("SELECT COUNT(*) FROM generations WHERE user_id=?", (user_id,))
-        total_gens = c.fetchone()[0]
-        c.execute("SELECT type, COUNT(*) FROM generations WHERE user_id=? GROUP BY type", (user_id,))
-        type_stats = c.fetchall()
+    try:
+        with sqlite3.connect("users.db") as conn:
+            c = conn.cursor()
+            c.execute("SELECT COUNT(*) FROM generations WHERE user_id=?", (user_id,))
+            total_gens = c.fetchone()[0]
+            c.execute("SELECT type, COUNT(*) FROM generations WHERE user_id=? GROUP BY type", (user_id,))
+            type_stats = c.fetchall()
+    except:
+        total_gens = 0
+        type_stats = []
     
     stats_text = f"📊 *Ваша статистика*\n\n"
     stats_text += f"📝 Всего генераций: {total_gens}\n\n"
     stats_text += f"*По типам:*\n"
-    for gen_type, count in type_stats:
-        emoji_map = {"code": "💻", "image": "🖼️", "video": "🎬", "text": "💬"}
-        emoji = emoji_map.get(gen_type, "📄")
-        stats_text += f"{emoji} {gen_type}: {count}\n"
+    if type_stats:
+        for gen_type, count in type_stats:
+            emoji_map = {"code": "💻", "image": "🖼️", "video": "🎬", "text": "💬"}
+            emoji = emoji_map.get(gen_type, "📄")
+            stats_text += f"{emoji} {gen_type}: {count}\n"
+    else:
+        stats_text += "Пока нет генераций\n"
     
     await message.answer(stats_text, reply_markup=get_main_keyboard(), parse_mode="Markdown")
 
@@ -639,19 +657,27 @@ async def generate_code_response(message: Message, state: FSMContext):
         ext = CodeHandler.extract_file_extension(language)
         filename = f"code.{ext}"
 
-        with open(filename, "w", encoding="utf-8") as f:
-            f.write(code)
+        try:
+            with open(filename, "w", encoding="utf-8") as f:
+                f.write(code)
 
-        await message.answer_document(
-            FSInputFile(filename),
-            caption=f"✅ Код на *{language.upper()}* готов!\nРасширение: `.{ext}`",
-            parse_mode="Markdown"
-        )
-        os.remove(filename)
-        
-        # Списываем токен
-        db.add_balance(message.from_user.id, -1)
-        db.add_generation(message.from_user.id, "code", text)
+            await message.answer_document(
+                FSInputFile(filename),
+                caption=f"✅ Код на *{language.upper()}* готов!\nРасширение: `.{ext}`",
+                parse_mode="Markdown"
+            )
+            
+            # Списываем токен
+            db.add_balance(message.from_user.id, -1)
+            db.add_generation(message.from_user.id, "code", text)
+        except Exception as e:
+            await message.answer(f"❌ Ошибка генерации кода: {str(e)}")
+        finally:
+            try:
+                if os.path.exists(filename):
+                    os.remove(filename)
+            except:
+                pass
     else:
         await message.answer(
             "⚠️ Не удалось определить язык.\n"
@@ -690,7 +716,10 @@ async def generate_image_response(message: Message, state: FSMContext):
     except Exception as e:
         await message.answer(f"❌ Ошибка генерации: {str(e)}")
     finally:
-        await wait_msg.delete()
+        try:
+            await wait_msg.delete()
+        except:
+            pass
 
 @dp.message(StateFilter(Form.waiting_for_video_prompt))
 async def generate_video_response(message: Message, state: FSMContext):
@@ -723,7 +752,10 @@ async def generate_video_response(message: Message, state: FSMContext):
     except Exception as e:
         await message.answer(f"❌ Ошибка генерации: {str(e)}")
     finally:
-        await wait_msg.delete()
+        try:
+            await wait_msg.delete()
+        except:
+            pass
 
 # ========== ОБРАБОТЧИК ГОЛОСОВЫХ ==========
 @dp.message(lambda message: message.voice)
@@ -752,10 +784,4 @@ async def handle_voice(message: Message):
         if text:
             await message.answer(f"📝 Распознанный текст:\n\n`{text}`", parse_mode="Markdown")
             
-            # Отвечаем на распознанный текст
-            service = AIProvider.get_service(user["model"])
-            response = await service.generate(text, user["history"])
-            
-            # Сохраняем историю
-            history = user["history"]
-            history.append
+            #
