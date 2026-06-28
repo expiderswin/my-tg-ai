@@ -7,8 +7,7 @@ import re
 import io
 import tempfile
 from datetime import datetime
-from typing import Optional, Dict, Any, List
-from pathlib import Path
+from typing import Optional, Dict, Any
 
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command, StateFilter
@@ -21,7 +20,6 @@ from aiogram.types import (
     ReplyKeyboardMarkup, ReplyKeyboardRemove
 )
 from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
-from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import BotCommand, BotCommandScopeDefault
 
 import google.generativeai as genai
@@ -38,7 +36,7 @@ import numpy as np
 # ========== КОНФИГУРАЦИЯ ==========
 BOT_TOKEN = "8902285510:AAGdfAZfFAOOCSGi_gQ-lqdb_7E7OolE6uo"
 
-# API ключи (замените на свои или используйте переменные окружения)
+# API ключи (замените на свои)
 GEMINI_KEY = os.getenv("GEMINI_API_KEY", "AIzaSyDummyKey")
 CLAUDE_KEY = os.getenv("CLAUDE_API_KEY", "sk-ant-dummy")
 OPENAI_KEY = os.getenv("OPENAI_API_KEY", "sk-dummy")
@@ -462,7 +460,7 @@ async def set_commands():
     except Exception as e:
         logger.error(f"Set commands error: {e}")
 
-# ========== ХЕНДЛЕРЫ ==========
+# ========== ОБРАБОТЧИКИ КОМАНД ==========
 @dp.message(Command("start"))
 async def start_cmd(message: Message):
     try:
@@ -495,6 +493,90 @@ async def start_cmd(message: Message):
         logger.error(f"Start error: {e}")
         await message.answer("❌ Ошибка при запуске. Попробуйте позже.")
 
+@dp.message(Command("models"))
+async def models_command(message: Message):
+    try:
+        keyboard = InlineKeyboardBuilder()
+        for model_key, model_info in MODELS.items():
+            emoji = model_info["emoji"]
+            button_text = f"{emoji} {model_key}"
+            keyboard.row(InlineKeyboardButton(text=button_text, callback_data=f"setmodel_{model_key}"))
+        keyboard.row(InlineKeyboardButton(text="🔙 Назад в меню", callback_data="back_to_menu"))
+        
+        user = db.get_user(message.from_user.id)
+        await message.answer(
+            f"🧠 *Выбор модели*\n\n"
+            f"Текущая модель: `{user['model']}`\n\n"
+            f"Выберите модель для общения:",
+            reply_markup=keyboard.as_markup(),
+            parse_mode="Markdown"
+        )
+    except Exception as e:
+        logger.error(f"Models error: {e}")
+        await message.answer("❌ Ошибка получения списка моделей.")
+
+@dp.message(Command("balance"))
+async def balance_command(message: Message):
+    try:
+        user = db.get_user(message.from_user.id)
+        await message.answer(
+            f"💰 *Ваш баланс:* `{user['balance']}` токенов\n\n"
+            f"📊 *Стоимость услуг:*\n"
+            f"• 💬 Текст/Чат: 1 токен\n"
+            f"• 💻 Код: 1 токен\n"
+            f"• 🖼️ Картинка: 5 токенов\n"
+            f"• 🎬 Видео: 10 токенов\n\n"
+            f"🎁 За реферала: +15 токенов",
+            reply_markup=get_main_keyboard(),
+            parse_mode="Markdown"
+        )
+    except Exception as e:
+        logger.error(f"Balance error: {e}")
+        await message.answer("❌ Ошибка получения баланса.")
+
+@dp.message(Command("referral"))
+async def referral_command(message: Message):
+    try:
+        bot_info = await bot.get_me()
+        link = f"https://t.me/{bot_info.username}?start={message.from_user.id}"
+        
+        await message.answer(
+            f"🔗 *Ваша реферальная ссылка:*\n"
+            f"`{link}`\n\n"
+            f"🎁 За каждого приглашённого вы получите 15 токенов!\n"
+            f"📊 Приглашённые должны нажать на ссылку и запустить бота.",
+            reply_markup=get_main_keyboard(),
+            parse_mode="Markdown"
+        )
+    except Exception as e:
+        logger.error(f"Referral error: {e}")
+        await message.answer("❌ Ошибка генерации реферальной ссылки.")
+
+@dp.message(Command("help"))
+async def help_command(message: Message):
+    await message.answer(
+        "📖 *Помощь*\n\n"
+        "🤖 Я AI-ассистент с множеством функций:\n\n"
+        "💬 *Чат*\n"
+        "Просто напишите текст, и я отвечу\n\n"
+        "💻 *Код*\n"
+        "Напишите, какой код нужен и на каком языке\n"
+        "Пример: `python парсер сайта`\n\n"
+        "🖼️ *Картинка*\n"
+        "Опишите, что сгенерировать\n"
+        "Пример: `красивый закат`\n\n"
+        "🎬 *Видео*\n"
+        "Напишите текст для видео\n"
+        "Пример: `AI генерация`\n\n"
+        "🎙️ *Голос*\n"
+        "Отправьте голосовое сообщение - я распознаю речь\n\n"
+        "💰 Баланс пополняется за рефералов!\n\n"
+        "Используйте кнопки внизу для быстрого доступа!",
+        reply_markup=get_main_keyboard(),
+        parse_mode="Markdown"
+    )
+
+# ========== ОБРАБОТЧИКИ КНОПОК ==========
 @dp.message(lambda message: message.text == "💬 Чат")
 async def chat_button(message: Message):
     await message.answer(
@@ -537,44 +619,11 @@ async def video_button(message: Message, state: FSMContext):
 
 @dp.message(lambda message: message.text == "💰 Баланс")
 async def balance_button(message: Message):
-    try:
-        user = db.get_user(message.from_user.id)
-        await message.answer(
-            f"💰 *Ваш баланс:* `{user['balance']}` токенов\n\n"
-            f"📊 *Стоимость услуг:*\n"
-            f"• 💬 Текст/Чат: 1 токен\n"
-            f"• 💻 Код: 1 токен\n"
-            f"• 🖼️ Картинка: 5 токенов\n"
-            f"• 🎬 Видео: 10 токенов\n\n"
-            f"🎁 За реферала: +15 токенов",
-            reply_markup=get_main_keyboard(),
-            parse_mode="Markdown"
-        )
-    except Exception as e:
-        logger.error(f"Balance error: {e}")
-        await message.answer("❌ Ошибка получения баланса.")
+    await balance_command(message)
 
 @dp.message(lambda message: message.text == "🧠 Модели")
 async def models_button(message: Message):
-    try:
-        keyboard = InlineKeyboardBuilder()
-        for model_key, model_info in MODELS.items():
-            emoji = model_info["emoji"]
-            button_text = f"{emoji} {model_key}"
-            keyboard.row(InlineKeyboardButton(text=button_text, callback_data=f"setmodel_{model_key}"))
-        keyboard.row(InlineKeyboardButton(text="🔙 Назад в меню", callback_data="back_to_menu"))
-        
-        user = db.get_user(message.from_user.id)
-        await message.answer(
-            f"🧠 *Выбор модели*\n\n"
-            f"Текущая модель: `{user['model']}`\n\n"
-            f"Выберите модель для общения:",
-            reply_markup=keyboard.as_markup(),
-            parse_mode="Markdown"
-        )
-    except Exception as e:
-        logger.error(f"Models error: {e}")
-        await message.answer("❌ Ошибка получения списка моделей.")
+    await models_command(message)
 
 @dp.message(lambda message: message.text == "📊 Статистика")
 async def stats_button(message: Message):
@@ -606,45 +655,13 @@ async def stats_button(message: Message):
 
 @dp.message(lambda message: message.text == "🔗 Рефералка")
 async def referral_button(message: Message):
-    try:
-        bot_info = await bot.get_me()
-        link = f"https://t.me/{bot_info.username}?start={message.from_user.id}"
-        
-        await message.answer(
-            f"🔗 *Ваша реферальная ссылка:*\n"
-            f"`{link}`\n\n"
-            f"🎁 За каждого приглашённого вы получите 15 токенов!\n"
-            f"📊 Приглашённые должны нажать на ссылку и запустить бота.",
-            reply_markup=get_main_keyboard(),
-            parse_mode="Markdown"
-        )
-    except Exception as e:
-        logger.error(f"Referral error: {e}")
-        await message.answer("❌ Ошибка генерации реферальной ссылки.")
+    await referral_command(message)
 
 @dp.message(lambda message: message.text == "📖 Помощь")
 async def help_button(message: Message):
-    await message.answer(
-        "📖 *Помощь*\n\n"
-        "🤖 Я AI-ассистент с множеством функций:\n\n"
-        "💬 *Чат*\n"
-        "Просто напишите текст, и я отвечу\n\n"
-        "💻 *Код*\n"
-        "Напишите, какой код нужен и на каком языке\n"
-        "Пример: `python парсер сайта`\n\n"
-        "🖼️ *Картинка*\n"
-        "Опишите, что сгенерировать\n"
-        "Пример: `красивый закат`\n\n"
-        "🎬 *Видео*\n"
-        "Напишите текст для видео\n"
-        "Пример: `AI генерация`\n\n"
-        "🎙️ *Голос*\n"
-        "Отправьте голосовое сообщение - я распознаю речь\n\n"
-        "💰 Баланс пополняется за рефералов!",
-        reply_markup=get_main_keyboard(),
-        parse_mode="Markdown"
-    )
+    await help_command(message)
 
+# ========== INLINE CALLBACKS ==========
 @dp.callback_query(lambda c: c.data.startswith("setmodel_"))
 async def set_model(callback: CallbackQuery):
     try:
@@ -665,7 +682,7 @@ async def back_to_menu(callback: CallbackQuery):
     except Exception as e:
         logger.error(f"Back to menu error: {e}")
 
-# ========== ОБРАБОТЧИК СОСТОЯНИЙ ==========
+# ========== ОБРАБОТЧИКИ СОСТОЯНИЙ ==========
 @dp.message(StateFilter(Form.waiting_for_code_prompt))
 async def generate_code_response(message: Message, state: FSMContext):
     await state.clear()
@@ -772,19 +789,3 @@ async def generate_video_response(message: Message, state: FSMContext):
             )
             db.add_balance(user_id, -10)
             db.add_generation(user_id, "video", message.text)
-        else:
-            await message.answer("❌ Не удалось сгенерировать видео. Попробуйте позже.")
-    except Exception as e:
-        logger.error(f"Video generation error: {e}")
-        await message.answer(f"❌ Ошибка генерации: {str(e)}")
-    finally:
-        try:
-            if wait_msg:
-                await wait_msg.delete()
-        except:
-            pass
-
-# ========== ОБРАБОТЧИК ГОЛОСОВЫХ ==========
-@dp.message(lambda message: message.voice)
-async def handle_voice(message: Message):
-    user_id
