@@ -12,6 +12,7 @@ from typing import Optional, Dict, Any, List
 from pathlib import Path
 import random
 import string
+import base64
 
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command, StateFilter
@@ -20,10 +21,13 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import (
     InlineKeyboardMarkup, InlineKeyboardButton, 
     FSInputFile, BufferedInputFile, InputFile,
-    Message, CallbackQuery
+    Message, CallbackQuery, KeyboardButton,
+    ReplyKeyboardMarkup, ReplyKeyboardRemove,
+    WebAppInfo
 )
-from aiogram.utils.keyboard import InlineKeyboardBuilder
+from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
 from aiogram.exceptions import TelegramBadRequest
+from aiogram.types import BotCommand, BotCommandScopeDefault
 
 import google.generativeai as genai
 import anthropic
@@ -47,13 +51,13 @@ REPLICATE_API_KEY = os.getenv("REPLICATE_API_KEY") or "r8_dummy"
 
 # Настройка моделей
 MODELS = {
-    "gemini-2.0-flash": {"provider": "gemini", "context": 1_000_000},
-    "gemini-1.5-pro": {"provider": "gemini", "context": 2_000_000},
-    "claude-3.5-sonnet": {"provider": "claude", "context": 200_000},
-    "claude-3-haiku": {"provider": "claude", "context": 200_000},
-    "gpt-4o": {"provider": "openai", "context": 128_000},
-    "gpt-4-turbo": {"provider": "openai", "context": 128_000},
-    "deepseek-chat": {"provider": "deepseek", "context": 64_000},
+    "gemini-2.0-flash": {"provider": "gemini", "context": 1_000_000, "emoji": "🟢"},
+    "gemini-1.5-pro": {"provider": "gemini", "context": 2_000_000, "emoji": "🟢"},
+    "claude-3.5-sonnet": {"provider": "claude", "context": 200_000, "emoji": "🟣"},
+    "claude-3-haiku": {"provider": "claude", "context": 200_000, "emoji": "🟣"},
+    "gpt-4o": {"provider": "openai", "context": 128_000, "emoji": "🟠"},
+    "gpt-4-turbo": {"provider": "openai", "context": 128_000, "emoji": "🟠"},
+    "deepseek-chat": {"provider": "deepseek", "context": 64_000, "emoji": "🔵"},
 }
 
 DEFAULT_MODEL = "gemini-2.0-flash"
@@ -389,6 +393,58 @@ class Form(StatesGroup):
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
+# ========== КЛАВИАТУРА (КНОПКИ В ИНТЕРФЕЙСЕ) ==========
+def get_main_keyboard() -> ReplyKeyboardMarkup:
+    """Главная клавиатура с кнопками рядом с полем ввода"""
+    builder = ReplyKeyboardBuilder()
+    
+    # Первый ряд
+    builder.row(
+        KeyboardButton(text="💬 Чат"),
+        KeyboardButton(text="💻 Код"),
+        KeyboardButton(text="🖼️ Картинка")
+    )
+    
+    # Второй ряд
+    builder.row(
+        KeyboardButton(text="🎬 Видео"),
+        KeyboardButton(text="💰 Баланс"),
+        KeyboardButton(text="🧠 Модели")
+    )
+    
+    # Третий ряд
+    builder.row(
+        KeyboardButton(text="📊 Статистика"),
+        KeyboardButton(text="🔗 Рефералка"),
+        KeyboardButton(text="📖 Помощь")
+    )
+    
+    return builder.as_markup(resize_keyboard=True)
+
+def get_models_keyboard() -> ReplyKeyboardMarkup:
+    """Клавиатура выбора моделей"""
+    builder = ReplyKeyboardBuilder()
+    
+    for model_key, model_info in MODELS.items():
+        emoji = model_info["emoji"]
+        display_name = f"{emoji} {model_key}"
+        builder.row(KeyboardButton(text=f"model_{model_key}"))
+    
+    builder.row(KeyboardButton(text="🔙 Назад"))
+    
+    return builder.as_markup(resize_keyboard=True)
+
+# ========== УСТАНОВКА КОМАНД ==========
+async def set_commands():
+    commands = [
+        BotCommand(command="start", description="🏠 Главное меню"),
+        BotCommand(command="models", description="🧠 Выбор модели"),
+        BotCommand(command="balance", description="💰 Баланс"),
+        BotCommand(command="referral", description="🔗 Реферальная ссылка"),
+        BotCommand(command="help", description="📖 Помощь"),
+    ]
+    await bot.set_my_commands(commands, scope=BotCommandScopeDefault())
+
 # ========== ХЕНДЛЕРЫ ==========
 @dp.message(Command("start"))
 async def start_cmd(message: Message):
@@ -396,23 +452,12 @@ async def start_cmd(message: Message):
     
     # Реферальная система
     if len(message.text.split()) > 1:
-        referrer_id = int(message.text.split()[1])
-        if referrer_id != message.from_user.id:
-            db.add_referral(referrer_id, message.from_user.id)
-
-    keyboard = InlineKeyboardBuilder()
-    keyboard.row(
-        InlineKeyboardButton(text="💰 Баланс", callback_data="balance"),
-        InlineKeyboardButton(text="🧠 Модели", callback_data="models")
-    )
-    keyboard.row(
-        InlineKeyboardButton(text="🖼️ Сгенерировать картинку", callback_data="generate_image"),
-        InlineKeyboardButton(text="🎬 Сгенерировать видео", callback_data="generate_video")
-    )
-    keyboard.row(
-        InlineKeyboardButton(text="📊 Статистика", callback_data="stats"),
-        InlineKeyboardButton(text="ℹ️ Помощь", callback_data="help")
-    )
+        try:
+            referrer_id = int(message.text.split()[1])
+            if referrer_id != message.from_user.id:
+                db.add_referral(referrer_id, message.from_user.id)
+        except:
+            pass
 
     await message.answer(
         f"🤖 *AI ALL Bot v3.0*\n\n"
@@ -424,101 +469,163 @@ async def start_cmd(message: Message):
         f"• 💻 Генерирую код на всех языках\n"
         f"• 🎨 Создаю изображения по описанию\n"
         f"• 🎬 Генерирую видео с текстом\n"
-        f"• 🎙️ Распознаю голосовые сообщения\n"
-        f"• 📄 Работаю с файлами\n\n"
-        f"Просто напиши запрос или отправь голосовое!",
+        f"• 🎙️ Распознаю голосовые сообщения\n\n"
+        f"Используйте кнопки ниже для быстрого доступа!",
+        reply_markup=get_main_keyboard(),
+        parse_mode="Markdown"
+    )
+
+@dp.message(lambda message: message.text == "💬 Чат")
+async def chat_button(message: Message):
+    await message.answer(
+        "💬 Режим чата активен!\n"
+        "Просто напишите любой текст, и я отвечу.\n\n"
+        "🎙️ Или отправьте голосовое сообщение!",
+        reply_markup=get_main_keyboard()
+    )
+
+@dp.message(lambda message: message.text == "💻 Код")
+async def code_button(message: Message, state: FSMContext):
+    await state.set_state(Form.waiting_for_code_prompt)
+    await message.answer(
+        "💻 Напишите, какой код нужно сгенерировать.\n"
+        "Пример: `python парсер сайта`\n"
+        "Поддерживаются: Python, C++, HTML, CSS, JavaScript, Java и другие",
+        reply_markup=get_main_keyboard()
+    )
+
+@dp.message(lambda message: message.text == "🖼️ Картинка")
+async def image_button(message: Message, state: FSMContext):
+    await state.set_state(Form.waiting_for_image_prompt)
+    await message.answer(
+        "🖼️ Напишите описание изображения.\n"
+        "Пример: `красивый закат на море, цифровое искусство`\n\n"
+        "💰 Стоимость: 5 токенов",
+        reply_markup=get_main_keyboard()
+    )
+
+@dp.message(lambda message: message.text == "🎬 Видео")
+async def video_button(message: Message, state: FSMContext):
+    await state.set_state(Form.waiting_for_video_prompt)
+    await message.answer(
+        "🎬 Напишите текст для видео.\n"
+        "Пример: `AI генерация контента`\n\n"
+        "💰 Стоимость: 10 токенов\n"
+        "⏱️ Длительность: 5 секунд",
+        reply_markup=get_main_keyboard()
+    )
+
+@dp.message(lambda message: message.text == "💰 Баланс")
+async def balance_button(message: Message):
+    user = db.get_user(message.from_user.id)
+    await message.answer(
+        f"💰 *Ваш баланс:* `{user['balance']}` токенов\n\n"
+        f"📊 *Стоимость услуг:*\n"
+        f"• 💬 Текст/Чат: 1 токен\n"
+        f"• 💻 Код: 1 токен\n"
+        f"• 🖼️ Картинка: 5 токенов\n"
+        f"• 🎬 Видео: 10 токенов\n\n"
+        f"🎁 За реферала: +15 токенов",
+        reply_markup=get_main_keyboard(),
+        parse_mode="Markdown"
+    )
+
+@dp.message(lambda message: message.text == "🧠 Модели")
+async def models_button(message: Message):
+    keyboard = InlineKeyboardBuilder()
+    for model_key, model_info in MODELS.items():
+        emoji = model_info["emoji"]
+        button_text = f"{emoji} {model_key}"
+        keyboard.row(InlineKeyboardButton(text=button_text, callback_data=f"setmodel_{model_key}"))
+    keyboard.row(InlineKeyboardButton(text="🔙 Назад в меню", callback_data="back_to_menu"))
+    
+    user = db.get_user(message.from_user.id)
+    await message.answer(
+        f"🧠 *Выбор модели*\n\n"
+        f"Текущая модель: `{user['model']}`\n\n"
+        f"Выберите модель для общения:",
         reply_markup=keyboard.as_markup(),
         parse_mode="Markdown"
     )
 
-@dp.message(Command("models"))
-async def models_cmd(message: Message):
-    keyboard = InlineKeyboardBuilder()
-    for model in MODELS.keys():
-        keyboard.row(InlineKeyboardButton(text=model, callback_data=f"setmodel_{model}"))
-    await message.answer("Выберите модель:", reply_markup=keyboard.as_markup())
+@dp.message(lambda message: message.text == "📊 Статистика")
+async def stats_button(message: Message):
+    user_id = message.from_user.id
+    
+    # Подсчёт генераций
+    with sqlite3.connect("users.db") as conn:
+        c = conn.cursor()
+        c.execute("SELECT COUNT(*) FROM generations WHERE user_id=?", (user_id,))
+        total_gens = c.fetchone()[0]
+        c.execute("SELECT type, COUNT(*) FROM generations WHERE user_id=? GROUP BY type", (user_id,))
+        type_stats = c.fetchall()
+    
+    stats_text = f"📊 *Ваша статистика*\n\n"
+    stats_text += f"📝 Всего генераций: {total_gens}\n\n"
+    stats_text += f"*По типам:*\n"
+    for gen_type, count in type_stats:
+        emoji_map = {"code": "💻", "image": "🖼️", "video": "🎬", "text": "💬"}
+        emoji = emoji_map.get(gen_type, "📄")
+        stats_text += f"{emoji} {gen_type}: {count}\n"
+    
+    await message.answer(stats_text, reply_markup=get_main_keyboard(), parse_mode="Markdown")
+
+@dp.message(lambda message: message.text == "🔗 Рефералка")
+async def referral_button(message: Message):
+    try:
+        bot_info = await bot.get_me()
+        link = f"https://t.me/{bot_info.username}?start={message.from_user.id}"
+    except:
+        link = f"https://t.me/MyAIBot?start={message.from_user.id}"
+    
+    await message.answer(
+        f"🔗 *Ваша реферальная ссылка:*\n"
+        f"`{link}`\n\n"
+        f"🎁 За каждого приглашённого вы получите 15 токенов!\n"
+        f"📊 Приглашённые должны нажать на ссылку и запустить бота.",
+        reply_markup=get_main_keyboard(),
+        parse_mode="Markdown"
+    )
+
+@dp.message(lambda message: message.text == "📖 Помощь")
+async def help_button(message: Message):
+    await message.answer(
+        "📖 *Помощь*\n\n"
+        "🤖 Я AI-ассистент с множеством функций:\n\n"
+        "💬 *Чат*\n"
+        "Просто напишите текст, и я отвечу\n\n"
+        "💻 *Код*\n"
+        "Напишите, какой код нужен и на каком языке\n"
+        "Пример: `python парсер сайта`\n\n"
+        "🖼️ *Картинка*\n"
+        "Опишите, что сгенерировать\n"
+        "Пример: `красивый закат`\n\n"
+        "🎬 *Видео*\n"
+        "Напишите текст для видео\n"
+        "Пример: `AI генерация`\n\n"
+        "🎙️ *Голос*\n"
+        "Отправьте голосовое сообщение - я распознаю речь\n\n"
+        "💰 Баланс пополняется за рефералов!",
+        reply_markup=get_main_keyboard(),
+        parse_mode="Markdown"
+    )
+
+@dp.message(lambda message: message.text == "🔙 Назад")
+async def back_button(message: Message):
+    await start_cmd(message)
 
 @dp.callback_query(lambda c: c.data.startswith("setmodel_"))
 async def set_model(callback: CallbackQuery):
     model = callback.data.split("_")[1]
     db.update_user(callback.from_user.id, model=model)
     await callback.answer(f"✅ Модель изменена на {model}")
-    await callback.message.edit_text(f"Активная модель: {model}")
+    await callback.message.edit_text(f"✅ Активная модель: {model}")
+    await callback.message.answer("Используйте кнопки для продолжения:", reply_markup=get_main_keyboard())
 
-@dp.message(Command("balance"))
-async def balance_cmd(message: Message):
-    user = db.get_user(message.from_user.id)
-    await message.answer(f"💰 Ваш баланс: `{user['balance']}` токенов\n\n"
-                        f"🎁 За реферала: +15 токенов", parse_mode="Markdown")
-
-@dp.message(Command("code"))
-async def code_cmd(message: Message, state: FSMContext):
-    await state.set_state(Form.waiting_for_code_prompt)
-    await message.answer("💻 Напишите, какой код нужно сгенерировать и на каком языке.\nПример: `python парсер сайта`")
-
-@dp.message(Command("image"))
-async def image_cmd(message: Message, state: FSMContext):
-    await state.set_state(Form.waiting_for_image_prompt)
-    await message.answer("🖼️ Напишите описание изображения.\nПример: `красивый закат на море, цифровое искусство`")
-
-@dp.message(Command("video"))
-async def video_cmd(message: Message, state: FSMContext):
-    await state.set_state(Form.waiting_for_video_prompt)
-    await message.answer("🎬 Напишите текст для видео.\nПример: `AI генерация контента`")
-
-@dp.message(Command("referral"))
-async def referral_cmd(message: Message):
-    try:
-        bot_info = await bot.get_me()
-        link = f"https://t.me/{bot_info.username}?start={message.from_user.id}"
-    except:
-        link = f"https://t.me/MyAIBot?start={message.from_user.id}"
-    await message.answer(
-        f"🔗 Ваша реферальная ссылка:\n`{link}`\n\n"
-        f"За каждого приглашённого вы получите 15 токенов!",
-        parse_mode="Markdown"
-    )
-
-@dp.message(Command("help"))
-async def help_cmd(message: Message):
-    await message.answer(
-        "📖 *Помощь*\n\n"
-        "/start - Главное меню\n"
-        "/models - Выбор модели\n"
-        "/balance - Баланс\n"
-        "/code - Генерация кода\n"
-        "/image - Генерация изображения\n"
-        "/video - Генерация видео\n"
-        "/referral - Реферальная ссылка\n\n"
-        "🎙️ Отправьте голосовое сообщение - я распознаю речь\n"
-        "💬 Просто напишите текст - я отвечу как ИИ",
-        parse_mode="Markdown"
-    )
-
-@dp.callback_query(lambda c: c.data == "models")
-async def show_models(callback: CallbackQuery):
-    await models_cmd(callback.message)
-
-@dp.callback_query(lambda c: c.data == "balance")
-async def show_balance(callback: CallbackQuery):
-    await balance_cmd(callback.message)
-
-@dp.callback_query(lambda c: c.data == "help")
-async def show_help(callback: CallbackQuery):
-    await help_cmd(callback.message)
-    await callback.answer()
-
-@dp.callback_query(lambda c: c.data == "generate_image")
-async def prompt_image(callback: CallbackQuery, state: FSMContext):
-    await state.set_state(Form.waiting_for_image_prompt)
-    await callback.message.answer("🖼️ Напишите описание изображения:")
-    await callback.answer()
-
-@dp.callback_query(lambda c: c.data == "generate_video")
-async def prompt_video(callback: CallbackQuery, state: FSMContext):
-    await state.set_state(Form.waiting_for_video_prompt)
-    await callback.message.answer("🎬 Напишите текст для видео (длительность 5 секунд):")
-    await callback.answer()
+@dp.callback_query(lambda c: c.data == "back_to_menu")
+async def back_to_menu(callback: CallbackQuery):
+    await callback.message.delete()
+    await start_cmd(callback.message)
 
 # ========== ОБРАБОТЧИК СОСТОЯНИЙ ==========
 @dp.message(StateFilter(Form.waiting_for_code_prompt))
@@ -546,7 +653,11 @@ async def generate_code_response(message: Message, state: FSMContext):
         db.add_balance(message.from_user.id, -1)
         db.add_generation(message.from_user.id, "code", text)
     else:
-        await message.answer("⚠️ Не удалось определить язык. Укажите язык в запросе (python, cpp, html и т.д.)")
+        await message.answer(
+            "⚠️ Не удалось определить язык.\n"
+            "Укажите язык в запросе (python, cpp, html и т.д.)\n"
+            "Пример: `python парсер сайта`"
+        )
 
 @dp.message(StateFilter(Form.waiting_for_image_prompt))
 async def generate_image_response(message: Message, state: FSMContext):
@@ -555,10 +666,15 @@ async def generate_image_response(message: Message, state: FSMContext):
     user = db.get_user(user_id)
     
     if user["balance"] < 5:
-        await message.answer("❌ Недостаточно токенов! Нужно 5 токенов для генерации изображения.")
+        await message.answer(
+            "❌ Недостаточно токенов!\n"
+            "Нужно 5 токенов для генерации изображения.\n"
+            "Пригласите друзей по реферальной ссылке!",
+            reply_markup=get_main_keyboard()
+        )
         return
     
-    await message.answer("🎨 Генерирую изображение... Это может занять до 30 секунд.")
+    wait_msg = await message.answer("🎨 Генерирую изображение... Это может занять до 30 секунд.")
     
     try:
         image_bytes = await ContentGenerator.generate_image(message.text)
@@ -573,6 +689,8 @@ async def generate_image_response(message: Message, state: FSMContext):
             await message.answer("❌ Не удалось сгенерировать изображение. Попробуйте позже.")
     except Exception as e:
         await message.answer(f"❌ Ошибка генерации: {str(e)}")
+    finally:
+        await wait_msg.delete()
 
 @dp.message(StateFilter(Form.waiting_for_video_prompt))
 async def generate_video_response(message: Message, state: FSMContext):
@@ -581,10 +699,15 @@ async def generate_video_response(message: Message, state: FSMContext):
     user = db.get_user(user_id)
     
     if user["balance"] < 10:
-        await message.answer("❌ Недостаточно токенов! Нужно 10 токенов для генерации видео.")
+        await message.answer(
+            "❌ Недостаточно токенов!\n"
+            "Нужно 10 токенов для генерации видео.\n"
+            "Пригласите друзей по реферальной ссылке!",
+            reply_markup=get_main_keyboard()
+        )
         return
     
-    await message.answer("🎬 Генерирую видео... Это может занять до 1 минуты.")
+    wait_msg = await message.answer("🎬 Генерирую видео... Это может занять до 1 минуты.")
     
     try:
         video_bytes = await ContentGenerator.generate_video(message.text, duration=5)
@@ -599,6 +722,8 @@ async def generate_video_response(message: Message, state: FSMContext):
             await message.answer("❌ Не удалось сгенерировать видео. Попробуйте позже.")
     except Exception as e:
         await message.answer(f"❌ Ошибка генерации: {str(e)}")
+    finally:
+        await wait_msg.delete()
 
 # ========== ОБРАБОТЧИК ГОЛОСОВЫХ ==========
 @dp.message(lambda message: message.voice)
@@ -607,10 +732,14 @@ async def handle_voice(message: Message):
     user = db.get_user(user_id)
     
     if user["balance"] < 1:
-        await message.answer("❌ Недостаточно токенов!")
+        await message.answer(
+            "❌ Недостаточно токенов!\n"
+            "Нужен 1 токен для распознавания голоса.",
+            reply_markup=get_main_keyboard()
+        )
         return
     
-    await message.answer("🎙️ Распознаю голосовое сообщение...")
+    wait_msg = await message.answer("🎙️ Распознаю голосовое сообщение...")
     
     try:
         # Скачиваем голосовое
@@ -629,94 +758,4 @@ async def handle_voice(message: Message):
             
             # Сохраняем историю
             history = user["history"]
-            history.append({"role": "user", "content": text})
-            history.append({"role": "assistant", "content": response})
-            if len(history) > 20:
-                history = history[-20:]
-            db.update_user(user_id, history=history)
-            
-            db.add_balance(user_id, -1)
-            await message.answer(response[:4096])
-        else:
-            await message.answer("❌ Не удалось распознать речь. Попробуйте говорить чётче.")
-    except Exception as e:
-        logger.error(f"Voice handling error: {e}")
-        await message.answer(f"❌ Ошибка обработки голоса: {str(e)}")
-
-# ========== ОСНОВНОЙ ОБРАБОТЧИК СООБЩЕНИЙ ==========
-@dp.message()
-async def handle_ai_response(message: Message):
-    user_id = message.from_user.id
-    user = db.get_user(user_id)
-    text = message.text
-
-    if not text:
-        return
-
-    # Проверка баланса
-    if user["balance"] <= 0:
-        await message.answer("❌ Недостаточно токенов! Используйте /referral для получения бонусов.")
-        return
-
-    # Проверка на запрос кода
-    if CodeHandler.detect_language(text):
-        language = CodeHandler.detect_language(text)
-        code = CodeHandler.generate_code(language, text)
-        ext = CodeHandler.extract_file_extension(language)
-        filename = f"code.{ext}"
-        
-        with open(filename, "w", encoding="utf-8") as f:
-            f.write(code)
-
-        await message.answer_document(
-            FSInputFile(filename),
-            caption=f"✅ Код на *{language.upper()}* сгенерирован!",
-            parse_mode="Markdown"
-        )
-        os.remove(filename)
-        db.add_balance(user_id, -1)
-        db.add_generation(user_id, "code", text)
-        return
-
-    # Обычный запрос к ИИ
-    try:
-        service = AIProvider.get_service(user["model"])
-        
-        # Отправляем уведомление о генерации
-        wait_msg = await message.answer("🤔 Думаю...")
-        
-        response = await service.generate(text, user["history"])
-
-        # Сохраняем историю
-        history = user["history"]
-        history.append({"role": "user", "content": text})
-        history.append({"role": "assistant", "content": response})
-        if len(history) > 20:
-            history = history[-20:]
-        db.update_user(user_id, history=history)
-
-        # Списываем токен
-        db.add_balance(user_id, -1)
-
-        # Удаляем уведомление
-        await wait_msg.delete()
-
-        # Отправляем ответ
-        await message.answer(response[:4096])
-
-    except Exception as e:
-        logger.error(f"Error: {e}")
-        await message.answer(f"❌ Ошибка: {str(e)}")
-
-# ========== ЗАПУСК ==========
-async def main():
-    try:
-        logger.info("🚀 Бот запущен!")
-        await bot.delete_webhook(drop_pending_updates=True)
-        await dp.start_polling(bot)
-    except Exception as e:
-        logger.error(f"Fatal error: {e}")
-        raise
-
-if __name__ == "__main__":
-    asyncio.run(main())
+            history.append
