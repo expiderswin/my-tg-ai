@@ -6,13 +6,9 @@ import json
 import re
 import io
 import tempfile
-import subprocess
 from datetime import datetime
 from typing import Optional, Dict, Any, List
 from pathlib import Path
-import random
-import string
-import base64
 
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command, StateFilter
@@ -20,10 +16,9 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import (
     InlineKeyboardMarkup, InlineKeyboardButton, 
-    FSInputFile, BufferedInputFile, InputFile,
+    FSInputFile, BufferedInputFile,
     Message, CallbackQuery, KeyboardButton,
-    ReplyKeyboardMarkup, ReplyKeyboardRemove,
-    WebAppInfo
+    ReplyKeyboardMarkup, ReplyKeyboardRemove
 )
 from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
 from aiogram.exceptions import TelegramBadRequest
@@ -36,28 +31,29 @@ import httpx
 from PIL import Image, ImageDraw, ImageFont
 import speech_recognition as sr
 from pydub import AudioSegment
-import aiofiles
 import replicate
-from moviepy.editor import VideoFileClip, ImageSequenceClip, TextClip, CompositeVideoClip
+from moviepy.editor import ImageSequenceClip
 import numpy as np
 
 # ========== КОНФИГУРАЦИЯ ==========
 BOT_TOKEN = "8902285510:AAGdfAZfFAOOCSGi_gQ-lqdb_7E7OolE6uo"
-GEMINI_KEY = os.getenv("GEMINI_API_KEY") or "AIzaSyDummyKeyReplaceMe"
-CLAUDE_KEY = os.getenv("CLAUDE_API_KEY") or "sk-ant-dummy"
-OPENAI_KEY = os.getenv("OPENAI_API_KEY") or "sk-dummy"
-DEEPSEEK_KEY = os.getenv("DEEPSEEK_API_KEY") or "sk-dummy"
-REPLICATE_API_KEY = os.getenv("REPLICATE_API_KEY") or "r8_dummy"
+
+# API ключи (замените на свои или используйте переменные окружения)
+GEMINI_KEY = os.getenv("GEMINI_API_KEY", "AIzaSyDummyKey")
+CLAUDE_KEY = os.getenv("CLAUDE_API_KEY", "sk-ant-dummy")
+OPENAI_KEY = os.getenv("OPENAI_API_KEY", "sk-dummy")
+DEEPSEEK_KEY = os.getenv("DEEPSEEK_API_KEY", "sk-dummy")
+REPLICATE_API_KEY = os.getenv("REPLICATE_API_KEY", "r8_dummy")
 
 # Настройка моделей
 MODELS = {
-    "gemini-2.0-flash": {"provider": "gemini", "context": 1_000_000, "emoji": "🟢"},
-    "gemini-1.5-pro": {"provider": "gemini", "context": 2_000_000, "emoji": "🟢"},
-    "claude-3.5-sonnet": {"provider": "claude", "context": 200_000, "emoji": "🟣"},
-    "claude-3-haiku": {"provider": "claude", "context": 200_000, "emoji": "🟣"},
-    "gpt-4o": {"provider": "openai", "context": 128_000, "emoji": "🟠"},
-    "gpt-4-turbo": {"provider": "openai", "context": 128_000, "emoji": "🟠"},
-    "deepseek-chat": {"provider": "deepseek", "context": 64_000, "emoji": "🔵"},
+    "gemini-2.0-flash": {"provider": "gemini", "context": 1000000, "emoji": "🟢"},
+    "gemini-1.5-pro": {"provider": "gemini", "context": 2000000, "emoji": "🟢"},
+    "claude-3.5-sonnet": {"provider": "claude", "context": 200000, "emoji": "🟣"},
+    "claude-3-haiku": {"provider": "claude", "context": 200000, "emoji": "🟣"},
+    "gpt-4o": {"provider": "openai", "context": 128000, "emoji": "🟠"},
+    "gpt-4-turbo": {"provider": "openai", "context": 128000, "emoji": "🟠"},
+    "deepseek-chat": {"provider": "deepseek", "context": 64000, "emoji": "🔵"},
 }
 
 DEFAULT_MODEL = "gemini-2.0-flash"
@@ -74,71 +70,90 @@ class Database:
         self._init_db()
 
     def _init_db(self):
-        with sqlite3.connect(self.db_path) as conn:
-            c = conn.cursor()
-            c.execute("""CREATE TABLE IF NOT EXISTS users (
-                user_id INTEGER PRIMARY KEY,
-                balance INTEGER DEFAULT 150,
-                model TEXT DEFAULT 'gemini-2.0-flash',
-                history TEXT DEFAULT '[]',
-                created_at TEXT
-            )""")
-            c.execute("""CREATE TABLE IF NOT EXISTS referrals (
-                referrer_id INTEGER,
-                referred_id INTEGER,
-                bonus INTEGER DEFAULT 15,
-                created_at TEXT
-            )""")
-            c.execute("""CREATE TABLE IF NOT EXISTS generations (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER,
-                type TEXT,
-                prompt TEXT,
-                created_at TEXT
-            )""")
-            conn.commit()
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                c = conn.cursor()
+                c.execute("""CREATE TABLE IF NOT EXISTS users (
+                    user_id INTEGER PRIMARY KEY,
+                    balance INTEGER DEFAULT 150,
+                    model TEXT DEFAULT 'gemini-2.0-flash',
+                    history TEXT DEFAULT '[]',
+                    created_at TEXT
+                )""")
+                c.execute("""CREATE TABLE IF NOT EXISTS referrals (
+                    referrer_id INTEGER,
+                    referred_id INTEGER,
+                    bonus INTEGER DEFAULT 15,
+                    created_at TEXT
+                )""")
+                c.execute("""CREATE TABLE IF NOT EXISTS generations (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER,
+                    type TEXT,
+                    prompt TEXT,
+                    created_at TEXT
+                )""")
+                conn.commit()
+        except Exception as e:
+            logger.error(f"DB init error: {e}")
 
     def get_user(self, user_id: int) -> Dict[str, Any]:
-        with sqlite3.connect(self.db_path) as conn:
-            c = conn.cursor()
-            c.execute("SELECT balance, model, history FROM users WHERE user_id=?", (user_id,))
-            row = c.fetchone()
-            if not row:
-                c.execute("INSERT INTO users (user_id, balance, created_at) VALUES (?, ?, ?)",
-                          (user_id, 150, datetime.now().isoformat()))
-                conn.commit()
-                return {"balance": 150, "model": DEFAULT_MODEL, "history": []}
-            return {"balance": row[0], "model": row[1], "history": json.loads(row[2])}
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                c = conn.cursor()
+                c.execute("SELECT balance, model, history FROM users WHERE user_id=?", (user_id,))
+                row = c.fetchone()
+                if not row:
+                    c.execute("INSERT INTO users (user_id, balance, created_at) VALUES (?, ?, ?)",
+                              (user_id, 150, datetime.now().isoformat()))
+                    conn.commit()
+                    return {"balance": 150, "model": DEFAULT_MODEL, "history": []}
+                return {"balance": row[0], "model": row[1], "history": json.loads(row[2])}
+        except Exception as e:
+            logger.error(f"Get user error: {e}")
+            return {"balance": 150, "model": DEFAULT_MODEL, "history": []}
 
     def update_user(self, user_id: int, **kwargs):
-        with sqlite3.connect(self.db_path) as conn:
-            c = conn.cursor()
-            for key, value in kwargs.items():
-                if key == "history":
-                    value = json.dumps(value)
-                c.execute(f"UPDATE users SET {key}=? WHERE user_id=?", (value, user_id))
-            conn.commit()
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                c = conn.cursor()
+                for key, value in kwargs.items():
+                    if key == "history":
+                        value = json.dumps(value)
+                    c.execute(f"UPDATE users SET {key}=? WHERE user_id=?", (value, user_id))
+                conn.commit()
+        except Exception as e:
+            logger.error(f"Update user error: {e}")
 
     def add_balance(self, user_id: int, amount: int):
-        with sqlite3.connect(self.db_path) as conn:
-            c = conn.cursor()
-            c.execute("UPDATE users SET balance = balance + ? WHERE user_id=?", (amount, user_id))
-            conn.commit()
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                c = conn.cursor()
+                c.execute("UPDATE users SET balance = balance + ? WHERE user_id=?", (amount, user_id))
+                conn.commit()
+        except Exception as e:
+            logger.error(f"Add balance error: {e}")
 
     def add_referral(self, referrer_id: int, referred_id: int):
-        with sqlite3.connect(self.db_path) as conn:
-            c = conn.cursor()
-            c.execute("INSERT INTO referrals (referrer_id, referred_id, created_at) VALUES (?, ?, ?)",
-                      (referrer_id, referred_id, datetime.now().isoformat()))
-            conn.commit()
-            self.add_balance(referrer_id, 15)
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                c = conn.cursor()
+                c.execute("INSERT INTO referrals (referrer_id, referred_id, created_at) VALUES (?, ?, ?)",
+                          (referrer_id, referred_id, datetime.now().isoformat()))
+                conn.commit()
+                self.add_balance(referrer_id, 15)
+        except Exception as e:
+            logger.error(f"Add referral error: {e}")
 
     def add_generation(self, user_id: int, gen_type: str, prompt: str):
-        with sqlite3.connect(self.db_path) as conn:
-            c = conn.cursor()
-            c.execute("INSERT INTO generations (user_id, type, prompt, created_at) VALUES (?, ?, ?, ?)",
-                      (user_id, gen_type, prompt, datetime.now().isoformat()))
-            conn.commit()
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                c = conn.cursor()
+                c.execute("INSERT INTO generations (user_id, type, prompt, created_at) VALUES (?, ?, ?, ?)",
+                          (user_id, gen_type, prompt, datetime.now().isoformat()))
+                conn.commit()
+        except Exception as e:
+            logger.error(f"Add generation error: {e}")
 
 db = Database()
 
@@ -146,16 +161,20 @@ db = Database()
 class AIProvider:
     @staticmethod
     def get_service(model_name: str):
-        provider = MODELS[model_name]["provider"]
-        if provider == "gemini":
-            return GeminiService(model_name)
-        elif provider == "claude":
-            return ClaudeService(model_name)
-        elif provider == "openai":
-            return OpenAIService(model_name)
-        elif provider == "deepseek":
-            return DeepSeekService(model_name)
-        raise ValueError(f"Unknown provider: {provider}")
+        try:
+            provider = MODELS[model_name]["provider"]
+            if provider == "gemini":
+                return GeminiService(model_name)
+            elif provider == "claude":
+                return ClaudeService(model_name)
+            elif provider == "openai":
+                return OpenAIService(model_name)
+            elif provider == "deepseek":
+                return DeepSeekService(model_name)
+            raise ValueError(f"Unknown provider: {provider}")
+        except Exception as e:
+            logger.error(f"Get service error: {e}")
+            return GeminiService(DEFAULT_MODEL)
 
 class GeminiService:
     def __init__(self, model_name: str):
@@ -181,11 +200,18 @@ class GeminiService:
 
 class ClaudeService:
     def __init__(self, model_name: str):
-        self.client = anthropic.Anthropic(api_key=CLAUDE_KEY)
-        self.model_name = model_name
+        try:
+            self.client = anthropic.Anthropic(api_key=CLAUDE_KEY)
+            self.model_name = model_name
+        except Exception as e:
+            logger.error(f"Claude init error: {e}")
+            self.client = None
+            self.model_name = model_name
 
     async def generate(self, prompt: str, history: list = None) -> str:
         try:
+            if not self.client:
+                return "❌ Claude не инициализирован. Проверьте API ключ."
             messages = history or []
             messages.append({"role": "user", "content": prompt})
             response = self.client.messages.create(
@@ -199,11 +225,18 @@ class ClaudeService:
 
 class OpenAIService:
     def __init__(self, model_name: str):
-        self.client = openai.AsyncOpenAI(api_key=OPENAI_KEY)
-        self.model_name = model_name
+        try:
+            self.client = openai.AsyncOpenAI(api_key=OPENAI_KEY)
+            self.model_name = model_name
+        except Exception as e:
+            logger.error(f"OpenAI init error: {e}")
+            self.client = None
+            self.model_name = model_name
 
     async def generate(self, prompt: str, history: list = None) -> str:
         try:
+            if not self.client:
+                return "❌ OpenAI не инициализирован. Проверьте API ключ."
             messages = history or []
             messages.append({"role": "user", "content": prompt})
             response = await self.client.chat.completions.create(
@@ -237,9 +270,10 @@ class DeepSeekService:
 class ContentGenerator:
     @staticmethod
     async def generate_image(prompt: str) -> Optional[bytes]:
-        """Генерация изображения через Replicate"""
         try:
-            # Используем Stable Diffusion
+            if not REPLICATE_API_KEY or REPLICATE_API_KEY == "r8_dummy":
+                return await ContentGenerator._create_fallback_image(prompt)
+            
             output = replicate.run(
                 "stability-ai/stable-diffusion:db21e45d3f7023abc2a46ee38a23973f6dce16bb082a930b0c49861f96d1e5bf",
                 input={
@@ -252,18 +286,15 @@ class ContentGenerator:
                     "guidance_scale": 7.5
                 }
             )
-            # Скачиваем изображение
             async with httpx.AsyncClient() as client:
                 response = await client.get(output[0])
                 return response.content
         except Exception as e:
             logger.error(f"Image generation error: {e}")
-            # Fallback: создаём простую картинку с текстом
             return await ContentGenerator._create_fallback_image(prompt)
 
     @staticmethod
-    async def _create_fallback_image(text: str) -> bytes:
-        """Создание простого изображения с текстом"""
+    async def _create_fallback_image(text: str) -> Optional[bytes]:
         try:
             img = Image.new('RGB', (800, 400), color=(50, 50, 80))
             d = ImageDraw.Draw(img)
@@ -277,15 +308,13 @@ class ContentGenerator:
             return img_byte_arr.getvalue()
         except Exception as e:
             logger.error(f"Fallback image error: {e}")
-            return b""
+            return None
 
     @staticmethod
     async def generate_video(prompt: str, duration: int = 5) -> Optional[bytes]:
-        """Генерация простого видео с текстом"""
         try:
-            # Создаём кадры с текстом
             frames = []
-            for i in range(duration * 24):  # 24 кадра в секунду
+            for i in range(duration * 24):
                 img = Image.new('RGB', (1280, 720), color=(40, 40, 80))
                 d = ImageDraw.Draw(img)
                 try:
@@ -301,19 +330,15 @@ class ContentGenerator:
                 img.save(img_byte_arr, format='PNG')
                 frames.append(np.array(Image.open(img_byte_arr)))
             
-            # Создаём видео из кадров
             clip = ImageSequenceClip(frames, fps=24)
             
-            # Сохраняем во временный файл
             with tempfile.NamedTemporaryFile(suffix='.mp4', delete=False) as tmp_file:
                 clip.write_videofile(tmp_file.name, codec='libx264', fps=24)
                 tmp_file_path = tmp_file.name
             
-            # Читаем файл
             with open(tmp_file_path, 'rb') as f:
                 video_data = f.read()
             
-            # Удаляем временный файл
             os.unlink(tmp_file_path)
             return video_data
         except Exception as e:
@@ -324,21 +349,17 @@ class ContentGenerator:
 class VoiceProcessor:
     @staticmethod
     async def voice_to_text(voice_file: bytes) -> Optional[str]:
-        """Конвертация голосового сообщения в текст"""
         tmp_file_path = None
         wav_path = None
         try:
-            # Сохраняем аудио во временный файл
             with tempfile.NamedTemporaryFile(suffix='.ogg', delete=False) as tmp_file:
                 tmp_file.write(voice_file)
                 tmp_file_path = tmp_file.name
             
-            # Конвертируем в WAV
             audio = AudioSegment.from_ogg(tmp_file_path)
             wav_path = tmp_file_path.replace('.ogg', '.wav')
             audio.export(wav_path, format='wav')
             
-            # Распознаём речь
             recognizer = sr.Recognizer()
             with sr.AudioFile(wav_path) as source:
                 audio_data = recognizer.record(source)
@@ -349,7 +370,6 @@ class VoiceProcessor:
             logger.error(f"Voice recognition error: {e}")
             return None
         finally:
-            # Удаляем временные файлы
             try:
                 if tmp_file_path and os.path.exists(tmp_file_path):
                     os.unlink(tmp_file_path)
@@ -406,24 +426,20 @@ dp = Dispatcher()
 
 # ========== КЛАВИАТУРА (КНОПКИ В ИНТЕРФЕЙСЕ) ==========
 def get_main_keyboard() -> ReplyKeyboardMarkup:
-    """Главная клавиатура с кнопками рядом с полем ввода"""
     builder = ReplyKeyboardBuilder()
     
-    # Первый ряд
     builder.row(
         KeyboardButton(text="💬 Чат"),
         KeyboardButton(text="💻 Код"),
         KeyboardButton(text="🖼️ Картинка")
     )
     
-    # Второй ряд
     builder.row(
         KeyboardButton(text="🎬 Видео"),
         KeyboardButton(text="💰 Баланс"),
         KeyboardButton(text="🧠 Модели")
     )
     
-    # Третий ряд
     builder.row(
         KeyboardButton(text="📊 Статистика"),
         KeyboardButton(text="🔗 Рефералка"),
@@ -432,59 +448,52 @@ def get_main_keyboard() -> ReplyKeyboardMarkup:
     
     return builder.as_markup(resize_keyboard=True)
 
-def get_models_keyboard() -> ReplyKeyboardMarkup:
-    """Клавиатура выбора моделей"""
-    builder = ReplyKeyboardBuilder()
-    
-    for model_key, model_info in MODELS.items():
-        emoji = model_info["emoji"]
-        display_name = f"{emoji} {model_key}"
-        builder.row(KeyboardButton(text=f"model_{model_key}"))
-    
-    builder.row(KeyboardButton(text="🔙 Назад"))
-    
-    return builder.as_markup(resize_keyboard=True)
-
 # ========== УСТАНОВКА КОМАНД ==========
 async def set_commands():
-    commands = [
-        BotCommand(command="start", description="🏠 Главное меню"),
-        BotCommand(command="models", description="🧠 Выбор модели"),
-        BotCommand(command="balance", description="💰 Баланс"),
-        BotCommand(command="referral", description="🔗 Реферальная ссылка"),
-        BotCommand(command="help", description="📖 Помощь"),
-    ]
-    await bot.set_my_commands(commands, scope=BotCommandScopeDefault())
+    try:
+        commands = [
+            BotCommand(command="start", description="🏠 Главное меню"),
+            BotCommand(command="models", description="🧠 Выбор модели"),
+            BotCommand(command="balance", description="💰 Баланс"),
+            BotCommand(command="referral", description="🔗 Реферальная ссылка"),
+            BotCommand(command="help", description="📖 Помощь"),
+        ]
+        await bot.set_my_commands(commands, scope=BotCommandScopeDefault())
+    except Exception as e:
+        logger.error(f"Set commands error: {e}")
 
 # ========== ХЕНДЛЕРЫ ==========
 @dp.message(Command("start"))
 async def start_cmd(message: Message):
-    user = db.get_user(message.from_user.id)
-    
-    # Реферальная система
-    if len(message.text.split()) > 1:
-        try:
-            referrer_id = int(message.text.split()[1])
-            if referrer_id != message.from_user.id:
-                db.add_referral(referrer_id, message.from_user.id)
-        except:
-            pass
+    try:
+        user = db.get_user(message.from_user.id)
+        
+        if len(message.text.split()) > 1:
+            try:
+                referrer_id = int(message.text.split()[1])
+                if referrer_id != message.from_user.id:
+                    db.add_referral(referrer_id, message.from_user.id)
+            except:
+                pass
 
-    await message.answer(
-        f"🤖 *AI ALL Bot v3.0*\n\n"
-        f"👤 Привет, {message.from_user.first_name}!\n"
-        f"💰 Баланс: `{user['balance']}` токенов\n"
-        f"🧠 Модель: `{user['model']}`\n\n"
-        f"📝 *Что я умею:*\n"
-        f"• 💬 Отвечаю на любые вопросы\n"
-        f"• 💻 Генерирую код на всех языках\n"
-        f"• 🎨 Создаю изображения по описанию\n"
-        f"• 🎬 Генерирую видео с текстом\n"
-        f"• 🎙️ Распознаю голосовые сообщения\n\n"
-        f"Используйте кнопки ниже для быстрого доступа!",
-        reply_markup=get_main_keyboard(),
-        parse_mode="Markdown"
-    )
+        await message.answer(
+            f"🤖 *AI ALL Bot v3.0*\n\n"
+            f"👤 Привет, {message.from_user.first_name}!\n"
+            f"💰 Баланс: `{user['balance']}` токенов\n"
+            f"🧠 Модель: `{user['model']}`\n\n"
+            f"📝 *Что я умею:*\n"
+            f"• 💬 Отвечаю на любые вопросы\n"
+            f"• 💻 Генерирую код на всех языках\n"
+            f"• 🎨 Создаю изображения по описанию\n"
+            f"• 🎬 Генерирую видео с текстом\n"
+            f"• 🎙️ Распознаю голосовые сообщения\n\n"
+            f"Используйте кнопки ниже!",
+            reply_markup=get_main_keyboard(),
+            parse_mode="Markdown"
+        )
+    except Exception as e:
+        logger.error(f"Start error: {e}")
+        await message.answer("❌ Ошибка при запуске. Попробуйте позже.")
 
 @dp.message(lambda message: message.text == "💬 Чат")
 async def chat_button(message: Message):
@@ -528,82 +537,90 @@ async def video_button(message: Message, state: FSMContext):
 
 @dp.message(lambda message: message.text == "💰 Баланс")
 async def balance_button(message: Message):
-    user = db.get_user(message.from_user.id)
-    await message.answer(
-        f"💰 *Ваш баланс:* `{user['balance']}` токенов\n\n"
-        f"📊 *Стоимость услуг:*\n"
-        f"• 💬 Текст/Чат: 1 токен\n"
-        f"• 💻 Код: 1 токен\n"
-        f"• 🖼️ Картинка: 5 токенов\n"
-        f"• 🎬 Видео: 10 токенов\n\n"
-        f"🎁 За реферала: +15 токенов",
-        reply_markup=get_main_keyboard(),
-        parse_mode="Markdown"
-    )
+    try:
+        user = db.get_user(message.from_user.id)
+        await message.answer(
+            f"💰 *Ваш баланс:* `{user['balance']}` токенов\n\n"
+            f"📊 *Стоимость услуг:*\n"
+            f"• 💬 Текст/Чат: 1 токен\n"
+            f"• 💻 Код: 1 токен\n"
+            f"• 🖼️ Картинка: 5 токенов\n"
+            f"• 🎬 Видео: 10 токенов\n\n"
+            f"🎁 За реферала: +15 токенов",
+            reply_markup=get_main_keyboard(),
+            parse_mode="Markdown"
+        )
+    except Exception as e:
+        logger.error(f"Balance error: {e}")
+        await message.answer("❌ Ошибка получения баланса.")
 
 @dp.message(lambda message: message.text == "🧠 Модели")
 async def models_button(message: Message):
-    keyboard = InlineKeyboardBuilder()
-    for model_key, model_info in MODELS.items():
-        emoji = model_info["emoji"]
-        button_text = f"{emoji} {model_key}"
-        keyboard.row(InlineKeyboardButton(text=button_text, callback_data=f"setmodel_{model_key}"))
-    keyboard.row(InlineKeyboardButton(text="🔙 Назад в меню", callback_data="back_to_menu"))
-    
-    user = db.get_user(message.from_user.id)
-    await message.answer(
-        f"🧠 *Выбор модели*\n\n"
-        f"Текущая модель: `{user['model']}`\n\n"
-        f"Выберите модель для общения:",
-        reply_markup=keyboard.as_markup(),
-        parse_mode="Markdown"
-    )
+    try:
+        keyboard = InlineKeyboardBuilder()
+        for model_key, model_info in MODELS.items():
+            emoji = model_info["emoji"]
+            button_text = f"{emoji} {model_key}"
+            keyboard.row(InlineKeyboardButton(text=button_text, callback_data=f"setmodel_{model_key}"))
+        keyboard.row(InlineKeyboardButton(text="🔙 Назад в меню", callback_data="back_to_menu"))
+        
+        user = db.get_user(message.from_user.id)
+        await message.answer(
+            f"🧠 *Выбор модели*\n\n"
+            f"Текущая модель: `{user['model']}`\n\n"
+            f"Выберите модель для общения:",
+            reply_markup=keyboard.as_markup(),
+            parse_mode="Markdown"
+        )
+    except Exception as e:
+        logger.error(f"Models error: {e}")
+        await message.answer("❌ Ошибка получения списка моделей.")
 
 @dp.message(lambda message: message.text == "📊 Статистика")
 async def stats_button(message: Message):
-    user_id = message.from_user.id
-    
-    # Подсчёт генераций
     try:
+        user_id = message.from_user.id
+        
         with sqlite3.connect("users.db") as conn:
             c = conn.cursor()
             c.execute("SELECT COUNT(*) FROM generations WHERE user_id=?", (user_id,))
             total_gens = c.fetchone()[0]
             c.execute("SELECT type, COUNT(*) FROM generations WHERE user_id=? GROUP BY type", (user_id,))
             type_stats = c.fetchall()
-    except:
-        total_gens = 0
-        type_stats = []
-    
-    stats_text = f"📊 *Ваша статистика*\n\n"
-    stats_text += f"📝 Всего генераций: {total_gens}\n\n"
-    stats_text += f"*По типам:*\n"
-    if type_stats:
-        for gen_type, count in type_stats:
-            emoji_map = {"code": "💻", "image": "🖼️", "video": "🎬", "text": "💬"}
-            emoji = emoji_map.get(gen_type, "📄")
-            stats_text += f"{emoji} {gen_type}: {count}\n"
-    else:
-        stats_text += "Пока нет генераций\n"
-    
-    await message.answer(stats_text, reply_markup=get_main_keyboard(), parse_mode="Markdown")
+        
+        stats_text = f"📊 *Ваша статистика*\n\n"
+        stats_text += f"📝 Всего генераций: {total_gens}\n\n"
+        stats_text += f"*По типам:*\n"
+        if type_stats:
+            for gen_type, count in type_stats:
+                emoji_map = {"code": "💻", "image": "🖼️", "video": "🎬", "text": "💬"}
+                emoji = emoji_map.get(gen_type, "📄")
+                stats_text += f"{emoji} {gen_type}: {count}\n"
+        else:
+            stats_text += "Пока нет генераций\n"
+        
+        await message.answer(stats_text, reply_markup=get_main_keyboard(), parse_mode="Markdown")
+    except Exception as e:
+        logger.error(f"Stats error: {e}")
+        await message.answer("❌ Ошибка получения статистики.")
 
 @dp.message(lambda message: message.text == "🔗 Рефералка")
 async def referral_button(message: Message):
     try:
         bot_info = await bot.get_me()
         link = f"https://t.me/{bot_info.username}?start={message.from_user.id}"
-    except:
-        link = f"https://t.me/MyAIBot?start={message.from_user.id}"
-    
-    await message.answer(
-        f"🔗 *Ваша реферальная ссылка:*\n"
-        f"`{link}`\n\n"
-        f"🎁 За каждого приглашённого вы получите 15 токенов!\n"
-        f"📊 Приглашённые должны нажать на ссылку и запустить бота.",
-        reply_markup=get_main_keyboard(),
-        parse_mode="Markdown"
-    )
+        
+        await message.answer(
+            f"🔗 *Ваша реферальная ссылка:*\n"
+            f"`{link}`\n\n"
+            f"🎁 За каждого приглашённого вы получите 15 токенов!\n"
+            f"📊 Приглашённые должны нажать на ссылку и запустить бота.",
+            reply_markup=get_main_keyboard(),
+            parse_mode="Markdown"
+        )
+    except Exception as e:
+        logger.error(f"Referral error: {e}")
+        await message.answer("❌ Ошибка генерации реферальной ссылки.")
 
 @dp.message(lambda message: message.text == "📖 Помощь")
 async def help_button(message: Message):
@@ -628,22 +645,25 @@ async def help_button(message: Message):
         parse_mode="Markdown"
     )
 
-@dp.message(lambda message: message.text == "🔙 Назад")
-async def back_button(message: Message):
-    await start_cmd(message)
-
 @dp.callback_query(lambda c: c.data.startswith("setmodel_"))
 async def set_model(callback: CallbackQuery):
-    model = callback.data.split("_")[1]
-    db.update_user(callback.from_user.id, model=model)
-    await callback.answer(f"✅ Модель изменена на {model}")
-    await callback.message.edit_text(f"✅ Активная модель: {model}")
-    await callback.message.answer("Используйте кнопки для продолжения:", reply_markup=get_main_keyboard())
+    try:
+        model = callback.data.split("_")[1]
+        db.update_user(callback.from_user.id, model=model)
+        await callback.answer(f"✅ Модель изменена на {model}")
+        await callback.message.edit_text(f"✅ Активная модель: {model}")
+        await callback.message.answer("Используйте кнопки для продолжения:", reply_markup=get_main_keyboard())
+    except Exception as e:
+        logger.error(f"Set model error: {e}")
+        await callback.answer("❌ Ошибка смены модели.")
 
 @dp.callback_query(lambda c: c.data == "back_to_menu")
 async def back_to_menu(callback: CallbackQuery):
-    await callback.message.delete()
-    await start_cmd(callback.message)
+    try:
+        await callback.message.delete()
+        await start_cmd(callback.message)
+    except Exception as e:
+        logger.error(f"Back to menu error: {e}")
 
 # ========== ОБРАБОТЧИК СОСТОЯНИЙ ==========
 @dp.message(StateFilter(Form.waiting_for_code_prompt))
@@ -651,13 +671,14 @@ async def generate_code_response(message: Message, state: FSMContext):
     await state.clear()
     text = message.text
     language = CodeHandler.detect_language(text)
+    filename = None
 
-    if language:
-        code = CodeHandler.generate_code(language, text)
-        ext = CodeHandler.extract_file_extension(language)
-        filename = f"code.{ext}"
+    try:
+        if language:
+            code = CodeHandler.generate_code(language, text)
+            ext = CodeHandler.extract_file_extension(language)
+            filename = f"code_{datetime.now().strftime('%Y%m%d_%H%M%S')}.{ext}"
 
-        try:
             with open(filename, "w", encoding="utf-8") as f:
                 f.write(code)
 
@@ -667,42 +688,43 @@ async def generate_code_response(message: Message, state: FSMContext):
                 parse_mode="Markdown"
             )
             
-            # Списываем токен
             db.add_balance(message.from_user.id, -1)
             db.add_generation(message.from_user.id, "code", text)
-        except Exception as e:
-            await message.answer(f"❌ Ошибка генерации кода: {str(e)}")
-        finally:
-            try:
-                if os.path.exists(filename):
-                    os.remove(filename)
-            except:
-                pass
-    else:
-        await message.answer(
-            "⚠️ Не удалось определить язык.\n"
-            "Укажите язык в запросе (python, cpp, html и т.д.)\n"
-            "Пример: `python парсер сайта`"
-        )
+        else:
+            await message.answer(
+                "⚠️ Не удалось определить язык.\n"
+                "Укажите язык в запросе (python, cpp, html и т.д.)\n"
+                "Пример: `python парсер сайта`"
+            )
+    except Exception as e:
+        logger.error(f"Code generation error: {e}")
+        await message.answer(f"❌ Ошибка генерации кода: {str(e)}")
+    finally:
+        try:
+            if filename and os.path.exists(filename):
+                os.remove(filename)
+        except:
+            pass
 
 @dp.message(StateFilter(Form.waiting_for_image_prompt))
 async def generate_image_response(message: Message, state: FSMContext):
     await state.clear()
     user_id = message.from_user.id
     user = db.get_user(user_id)
-    
-    if user["balance"] < 5:
-        await message.answer(
-            "❌ Недостаточно токенов!\n"
-            "Нужно 5 токенов для генерации изображения.\n"
-            "Пригласите друзей по реферальной ссылке!",
-            reply_markup=get_main_keyboard()
-        )
-        return
-    
-    wait_msg = await message.answer("🎨 Генерирую изображение... Это может занять до 30 секунд.")
+    wait_msg = None
     
     try:
+        if user["balance"] < 5:
+            await message.answer(
+                "❌ Недостаточно токенов!\n"
+                "Нужно 5 токенов для генерации изображения.\n"
+                "Пригласите друзей по реферальной ссылке!",
+                reply_markup=get_main_keyboard()
+            )
+            return
+        
+        wait_msg = await message.answer("🎨 Генерирую изображение... Это может занять до 30 секунд.")
+        
         image_bytes = await ContentGenerator.generate_image(message.text)
         if image_bytes:
             await message.answer_photo(
@@ -714,10 +736,12 @@ async def generate_image_response(message: Message, state: FSMContext):
         else:
             await message.answer("❌ Не удалось сгенерировать изображение. Попробуйте позже.")
     except Exception as e:
+        logger.error(f"Image generation error: {e}")
         await message.answer(f"❌ Ошибка генерации: {str(e)}")
     finally:
         try:
-            await wait_msg.delete()
+            if wait_msg:
+                await wait_msg.delete()
         except:
             pass
 
@@ -726,19 +750,20 @@ async def generate_video_response(message: Message, state: FSMContext):
     await state.clear()
     user_id = message.from_user.id
     user = db.get_user(user_id)
-    
-    if user["balance"] < 10:
-        await message.answer(
-            "❌ Недостаточно токенов!\n"
-            "Нужно 10 токенов для генерации видео.\n"
-            "Пригласите друзей по реферальной ссылке!",
-            reply_markup=get_main_keyboard()
-        )
-        return
-    
-    wait_msg = await message.answer("🎬 Генерирую видео... Это может занять до 1 минуты.")
+    wait_msg = None
     
     try:
+        if user["balance"] < 10:
+            await message.answer(
+                "❌ Недостаточно токенов!\n"
+                "Нужно 10 токенов для генерации видео.\n"
+                "Пригласите друзей по реферальной ссылке!",
+                reply_markup=get_main_keyboard()
+            )
+            return
+        
+        wait_msg = await message.answer("🎬 Генерирую видео... Это может занять до 1 минуты.")
+        
         video_bytes = await ContentGenerator.generate_video(message.text, duration=5)
         if video_bytes:
             await message.answer_video(
@@ -750,38 +775,16 @@ async def generate_video_response(message: Message, state: FSMContext):
         else:
             await message.answer("❌ Не удалось сгенерировать видео. Попробуйте позже.")
     except Exception as e:
+        logger.error(f"Video generation error: {e}")
         await message.answer(f"❌ Ошибка генерации: {str(e)}")
     finally:
         try:
-            await wait_msg.delete()
+            if wait_msg:
+                await wait_msg.delete()
         except:
             pass
 
 # ========== ОБРАБОТЧИК ГОЛОСОВЫХ ==========
 @dp.message(lambda message: message.voice)
 async def handle_voice(message: Message):
-    user_id = message.from_user.id
-    user = db.get_user(user_id)
-    
-    if user["balance"] < 1:
-        await message.answer(
-            "❌ Недостаточно токенов!\n"
-            "Нужен 1 токен для распознавания голоса.",
-            reply_markup=get_main_keyboard()
-        )
-        return
-    
-    wait_msg = await message.answer("🎙️ Распознаю голосовое сообщение...")
-    
-    try:
-        # Скачиваем голосовое
-        file = await bot.get_file(message.voice.file_id)
-        voice_bytes = await bot.download_file(file.file_path)
-        
-        # Распознаём речь
-        text = await VoiceProcessor.voice_to_text(voice_bytes)
-        
-        if text:
-            await message.answer(f"📝 Распознанный текст:\n\n`{text}`", parse_mode="Markdown")
-            
-            #
+    user_id
