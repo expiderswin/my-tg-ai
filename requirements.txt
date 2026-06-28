@@ -1,4 +1,4 @@
-aiogram==3.4.1
+aiogram>=3.7
 google-generativeai==0.7.2
 anthropic==0.31.2
 openai==1.35.13
